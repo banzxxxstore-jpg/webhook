@@ -37,7 +37,7 @@
                     <span class="text-4xl">🗳️</span>
                 </div>
                 <h1 class="text-3xl font-black tracking-tighter uppercase italic text-slate-900">E-VOTE <span class="text-indigo-600">OSIS</span></h1>
-                <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Digital Voting System v5.0</p>
+                <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Digital Voting System v5.1</p>
             </div>
 
             <button onclick="openLogin('voter')" class="w-full bg-white p-6 rounded-[2.5rem] shadow-xl shadow-slate-200/40 border border-white flex items-center gap-5 active:scale-95 transition-transform">
@@ -100,7 +100,6 @@
                         </div>
                         <input id="discord-webhook-url" type="text" placeholder="Masukkan Link Webhook Disini" class="w-full p-4 bg-indigo-700/50 rounded-2xl text-[11px] font-bold outline-none border border-indigo-400 text-white placeholder-indigo-300 mb-4 focus:ring-2 focus:ring-white">
                         <button id="save-webhook-btn" class="w-full bg-white text-indigo-600 p-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-50 transition-all shadow-lg active:scale-95">Simpan Link Webhook</button>
-                        <p class="text-[9px] mt-4 opacity-80 leading-relaxed font-medium">Link akan disimpan ke database pusat. Anda tidak perlu memasukkannya lagi setelah login ulang.</p>
                     </div>
 
                     <div class="bg-white p-6 rounded-[2.5rem] shadow-sm border border-white">
@@ -139,7 +138,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-        import { getFirestore, doc, setDoc, collection, onSnapshot, runTransaction, deleteDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, collection, onSnapshot, runTransaction, deleteDoc, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 
         const firebaseConfig = {
@@ -175,7 +174,6 @@
         } catch (err) { console.error(err); }
 
         function startSyncing() {
-            // Sync Webhook
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config'), (snap) => {
                 if(snap.exists()){
                     globalWebhook = snap.data().webhookUrl || "";
@@ -183,14 +181,12 @@
                 }
             });
 
-            // Sync Candidates
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'candidates'), (s) => {
                 candidates = s.docs.map(d => ({ id: d.id, ...d.data() }));
                 updateAdminDisplay();
                 if (currentUser) updateVoterDisplay();
             });
 
-            // Sync Voters
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'voters'), (s) => {
                 voters = s.docs.map(d => ({ id: d.id, ...d.data() }));
                 if (currentUser) {
@@ -201,91 +197,92 @@
             });
         }
 
-        // SAVE WEBHOOK
-        document.getElementById('save-webhook-btn').onclick = async (e) => {
-            const btn = e.target;
-            const url = document.getElementById('discord-webhook-url').value.trim();
-            if(!url.startsWith('https://discord.com/api/webhooks/')) {
-                alert("Link Webhook Discord tidak valid!");
-                return;
-            }
-
-            try {
-                btn.innerText = "MENYIMPAN...";
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config'), { webhookUrl: url }, { merge: true });
-                btn.innerText = "BERHASIL DISIMPAN! ✅";
-                btn.classList.replace('bg-white', 'bg-green-400');
-                btn.classList.replace('text-indigo-600', 'text-white');
-                setTimeout(() => {
-                    btn.innerText = "Simpan Link Webhook";
-                    btn.classList.replace('bg-green-400', 'bg-white');
-                    btn.classList.replace('text-white', 'text-indigo-600');
-                }, 2000);
-            } catch (err) {
-                alert("Gagal menyimpan ke database.");
-                btn.innerText = "Simpan Link Webhook";
-            }
-        };
-
-        // DISCORD SENDER
-        async function notifyDiscord(voter, candidate) {
-            // Ambil URL terbaru langsung dari database sebelum kirim
+        // DISCORD NOTIFIER
+        async function notifyDiscord(voterName, candName, action = "VOTE") {
             const configSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config'));
             const webhook = configSnap.exists() ? configSnap.data().webhookUrl : globalWebhook;
+            if (!webhook) return;
 
-            if (!webhook) {
-                console.warn("Webhook URL tidak ditemukan.");
-                return;
-            }
-
+            const isDelete = action === "DELETE";
             const payload = {
-                content: "🔔 **NOTIFIKASI E-VOTE TERBARU**",
+                content: isDelete ? "⚠️ **PENGURANGAN SUARA (VOTER DIHAPUS)**" : "🔔 **NOTIFIKASI E-VOTE TERBARU**",
                 embeds: [{
-                    title: "Suara Baru Berhasil Diterima!",
-                    color: 3066993,
+                    title: isDelete ? "Data Voter & Suara Dihapus" : "Suara Baru Berhasil Diterima!",
+                    color: isDelete ? 16711680 : 3066993,
                     fields: [
-                        { name: "👤 Pemilih", value: voter, inline: true },
-                        { name: "✅ Pilihan", value: candidate, inline: true },
+                        { name: "👤 Nama Siswa", value: voterName, inline: true },
+                        { name: isDelete ? "❌ Suara Ditarik Dari" : "✅ Pilihan", value: candName, inline: true },
                         { name: "🕒 Waktu", value: new Date().toLocaleString('id-ID'), inline: false }
                     ],
-                    footer: { text: "OSIS Digital Voting System v5.0" }
+                    footer: { text: "OSIS Digital Voting System" }
                 }]
             };
 
             try {
-                const response = await fetch(webhook, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if(!response.ok) throw new Error("Discord API Error");
-            } catch (err) {
-                console.error("Gagal mengirim ke Discord:", err);
-            }
+                await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            } catch (e) { console.error("Discord error", e); }
         }
 
-        // VOTING ACTION
+        // SAVE WEBHOOK
+        document.getElementById('save-webhook-btn').onclick = async (e) => {
+            const btn = e.target;
+            const url = document.getElementById('discord-webhook-url').value.trim();
+            if(!url.startsWith('https://discord.com/api/webhooks/')) return alert("Webhook tidak valid");
+            btn.innerText = "MENYIMPAN...";
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config'), { webhookUrl: url }, { merge: true });
+            btn.innerText = "BERHASIL ✅";
+            setTimeout(() => btn.innerText = "Simpan Link Webhook", 2000);
+        };
+
+        // VOTE PROCESS
         window.processVote = async (candId) => {
             if (!currentUser || currentUser.hasVoted) return;
             const target = candidates.find(c => c.id === candId);
-            
             try {
                 await runTransaction(db, async (tx) => {
                     const cRef = doc(db, 'artifacts', appId, 'public', 'data', 'candidates', candId);
                     const vRef = doc(db, 'artifacts', appId, 'public', 'data', 'voters', currentUser.nisn);
                     const cDoc = await tx.get(cRef);
-                    
                     tx.update(cRef, { votes: (cDoc.data().votes || 0) + 1 });
                     tx.update(vRef, { hasVoted: true, votedFor: candId });
                 });
-                
-                // Kirim notif
                 notifyDiscord(currentUser.name, target.name);
-
-            } catch (e) { alert("Terjadi kesalahan saat memilih."); }
+            } catch (e) { alert("Gagal mengirim suara."); }
         };
 
-        /** NAV & LOGINS **/
+        // DELETE VOTER (WITH SYNC)
+        window.deleteVoter = async (nisn) => {
+            const voter = voters.find(v => v.nisn === nisn);
+            if (!voter) return;
+            if (!confirm(`Hapus ${voter.name}? Jika sudah memilih, suara akan ditarik kembali.`)) return;
+
+            try {
+                // Jika sudah memilih, kurangi suara kandidat dulu
+                if (voter.hasVoted && voter.votedFor) {
+                    const candRef = doc(db, 'artifacts', appId, 'public', 'data', 'candidates', voter.votedFor);
+                    const candSnap = await getDoc(candRef);
+                    if (candSnap.exists()) {
+                        const currentVotes = candSnap.data().votes || 0;
+                        await updateDoc(candRef, { votes: Math.max(0, currentVotes - 1) });
+                        // Notif pembatalan suara ke Discord
+                        notifyDiscord(voter.name, candSnap.data().name, "DELETE");
+                    }
+                }
+                // Hapus data pemilih
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn));
+            } catch (e) {
+                console.error(e);
+                alert("Gagal menghapus voter.");
+            }
+        };
+
+        window.deleteCandidate = async (id) => {
+            if(confirm("Hapus paslon? Semua suara masuk untuk paslon ini akan hilang.")) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', id));
+            }
+        };
+
+        /** LOGIN & UI LOGIC **/
         window.openLogin = (role) => {
             window.activeRole = role;
             document.getElementById('view-selection').classList.add('hidden');
@@ -311,14 +308,11 @@
             const p = document.getElementById('login-pass').value.trim();
             const err = document.getElementById('login-error');
             err.classList.add('hidden');
-
             if (window.activeRole === 'admin') {
                 if (u === 'admin' && p === 'adminosis2024') {
                     document.getElementById('view-login').classList.add('hidden');
                     document.getElementById('view-admin').classList.remove('hidden');
-                } else {
-                    err.innerText = "Akses Admin Ditolak!"; err.classList.remove('hidden');
-                }
+                } else { err.innerText = "Akses Admin Ditolak!"; err.classList.remove('hidden'); }
             } else {
                 const match = voters.find(v => v.nisn === u && v.password === p);
                 if (match) {
@@ -327,22 +321,17 @@
                     document.getElementById('view-voter').classList.remove('hidden');
                     document.getElementById('display-voter-name').innerText = match.name;
                     updateVoterDisplay();
-                } else {
-                    err.innerText = "NISN atau Password Salah!"; err.classList.remove('hidden');
-                }
+                } else { err.innerText = "NISN atau Password Salah!"; err.classList.remove('hidden'); }
             }
         };
 
-        /** ADMIN MANAGEMENT **/
         document.getElementById('save-candidate-btn').onclick = async () => {
             const name = document.getElementById('new-c-name').value;
             const imgUrl = document.getElementById('new-c-img').value;
             const vision = document.getElementById('new-c-vision').value;
             if(!name || !vision) return;
             const finalImg = imgUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=6366f1&color=fff&size=200`;
-            await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'candidates')), { 
-                name, vision, votes: 0, img: finalImg 
-            });
+            await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'candidates')), { name, vision, votes: 0, img: finalImg });
             document.getElementById('new-c-name').value = ""; document.getElementById('new-c-img').value = ""; document.getElementById('new-c-vision').value = "";
         };
 
@@ -351,16 +340,10 @@
             const ni = document.getElementById('new-v-nisn').value;
             const pa = document.getElementById('new-v-pass').value;
             if(!n || !ni || !pa) return;
-            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', ni), { 
-                name: n, nisn: ni, password: pa, hasVoted: false, votedFor: null 
-            });
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', ni), { name: n, nisn: ni, password: pa, hasVoted: false, votedFor: null });
             document.getElementById('new-v-name').value = ""; document.getElementById('new-v-nisn').value = ""; document.getElementById('new-v-pass').value = "";
         };
 
-        window.deleteVoter = async (id) => { if(confirm("Hapus pemilih?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', id)); };
-        window.deleteCandidate = async (id) => { if(confirm("Hapus paslon?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', id)); };
-
-        /** UI RENDERING **/
         function updateAdminDisplay() {
             const stats = document.getElementById('vote-stats-container');
             const total = candidates.reduce((a, b) => a + (b.votes || 0), 0);
@@ -390,7 +373,7 @@
                             <p class="text-[9px] font-black text-slate-800 uppercase">${v.name}</p>
                             <p class="text-[8px] text-slate-400 font-bold">${v.nisn} • ${v.hasVoted ? '✅ SUDAH' : '⏳ BELUM'}</p>
                         </div>
-                        <button onclick="deleteVoter('${v.nisn}')" class="text-red-400 text-[10px]">✕</button>
+                        <button onclick="deleteVoter('${v.nisn}')" class="text-red-400 text-[10px] hover:text-red-600 font-bold">HAPUS</button>
                     </div>
                 `).join('');
             }
