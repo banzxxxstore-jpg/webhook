@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E-Voting OSIS v5 - Pro Results</title>
+    <title>E-Voting OSIS v5 - Secure Edition</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
@@ -15,7 +15,11 @@
             color: #f1f5f9;
         }
 
-        .no-chrome-warning { -webkit-text-security: disc; }
+        /* Trik untuk menyembunyikan karakter tanpa memicu auto-save password browser */
+        .hide-password {
+            -webkit-text-security: disc !important;
+            text-security: disc !important;
+        }
 
         .glass {
             background: rgba(15, 23, 42, 0.9);
@@ -54,14 +58,14 @@
 
         let db, auth, appId;
         let currentUser = null;
-        let currentRole = localStorage.getItem('user_role') || null; 
-        let currentView = localStorage.getItem('current_view') || 'selection';
-        let adminTab = localStorage.getItem('admin_tab') || 'dashboard'; 
+        let currentRole = null; // Reset setiap refresh
+        let currentView = 'selection'; // Reset setiap refresh
+        let adminTab = 'dashboard'; 
         let candidates = [];
         let voters = [];
         let isConnected = false;
         let showSidebar = false;
-        let discordWebhook = localStorage.getItem('discord_webhook') || '';
+        let discordWebhook = '';
 
         let modalConfig = { show: false, title: '', message: '', onConfirm: null, isAlert: false };
 
@@ -106,7 +110,7 @@
                 voters = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 if (currentRole === 'voter' && currentUser) {
                     const fresh = voters.find(v => v.nisn === currentUser.nisn);
-                    if (fresh) { currentUser = fresh; localStorage.setItem('user_data', JSON.stringify(fresh)); }
+                    if (fresh) currentUser = fresh;
                 }
                 window.render();
             });
@@ -114,7 +118,6 @@
             onSnapshot(doc(db, ...basePath, 'settings', 'discord'), (docSnap) => {
                 if (docSnap.exists()) {
                     discordWebhook = docSnap.data().url;
-                    localStorage.setItem('discord_webhook', discordWebhook);
                     window.render();
                 }
             });
@@ -131,9 +134,7 @@
         };
 
         window.confirmAction = () => {
-            if (modalConfig.onConfirm) {
-                modalConfig.onConfirm();
-            }
+            if (modalConfig.onConfirm) modalConfig.onConfirm();
             window.closeModal();
         };
 
@@ -145,16 +146,11 @@
             if (type === 'admin') {
                 if (userInp === 'admin' && passInp === 'adminosis2024') {
                     currentRole = 'admin'; currentView = 'admin-panel';
-                    localStorage.setItem('user_role', 'admin');
-                    localStorage.setItem('current_view', 'admin-panel');
                 } else { errorEl.innerText = "Akses ditolak!"; return; }
             } else {
                 const found = voters.find(v => v.nisn === userInp && v.password === passInp);
                 if (found) {
                     currentRole = 'voter'; currentUser = { ...found }; currentView = 'voter-panel';
-                    localStorage.setItem('user_role', 'voter');
-                    localStorage.setItem('current_view', 'voter-panel');
-                    localStorage.setItem('user_data', JSON.stringify(found));
                 } else { errorEl.innerText = "NISN atau Sandi salah!"; return; }
             }
             window.render();
@@ -251,16 +247,10 @@
         };
 
         window.toggleSidebar = () => { showSidebar = !showSidebar; window.render(); };
-        window.setAdminTab = (tab) => { 
-            adminTab = tab; 
-            localStorage.setItem('admin_tab', tab);
-            showSidebar = false; 
-            window.render(); 
-        };
+        window.setAdminTab = (tab) => { adminTab = tab; showSidebar = false; window.render(); };
 
         window.logout = () => { 
             currentRole = null; currentUser = null; currentView = 'selection'; 
-            localStorage.clear();
             window.render(); 
         };
 
@@ -274,7 +264,7 @@
             </div>`;
 
             const modalNode = modalConfig.show ? `<div class="fixed inset-0 z-[300] flex items-center justify-center p-6 bg-black/90 backdrop-blur-sm">
-                <div class="bg-slate-900 w-full max-w-xs rounded-[2.5rem] p-8 border border-white/10 animate-view">
+                <div class="bg-slate-900 w-full max-w-[320px] rounded-[2.5rem] p-8 border border-white/10 animate-view">
                     <h3 class="text-center font-black text-white uppercase mb-2 tracking-tight">${modalConfig.title}</h3>
                     <p class="text-center text-[11px] text-slate-400 font-bold mb-8">${modalConfig.message}</p>
                     <div class="flex gap-2">
@@ -320,7 +310,7 @@
                     <div class="text-center mb-16">
                         <h1 class="text-3xl font-black text-white italic tracking-tighter uppercase">E-VOTING<br><span class="text-indigo-500 font-normal">OSIS PRO v5</span></h1>
                     </div>
-                    <div class="w-full max-w-xs space-y-4">
+                    <div class="w-full max-w-[320px] space-y-4">
                         <button onclick="window.renderLogin('voter')" class="w-full bg-slate-900 p-6 rounded-[2rem] border border-white/10 flex items-center gap-4 active:scale-95 transition-all">
                             <div class="w-12 h-12 grad-primary rounded-2xl flex items-center justify-center text-white"><i data-lucide="user"></i></div>
                             <div class="text-left"><p class="font-black text-white text-sm uppercase">Siswa</p><p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Masuk Bilik</p></div>
@@ -334,13 +324,14 @@
             } else if (currentView.includes('login')) {
                 const isAdmin = currentView === 'admin-login';
                 content = `<div class="min-h-screen flex items-center justify-center p-6 animate-view">
-                    <div class="w-full max-sm">
+                    <div class="w-full max-w-[360px]">
                         <button onclick="window.logout()" class="mb-8 text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2"><i data-lucide="arrow-left" class="w-3 h-3"></i> Kembali</button>
                         <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5">
                             <h2 class="text-xl font-black text-white mb-8 italic uppercase">${isAdmin ? 'Admin' : 'Siswa'}<span class="text-indigo-500 ml-1 font-normal">Login</span></h2>
                             <div class="space-y-4">
                                 <input id="login-user" type="text" autocomplete="off" class="w-full p-4 bg-slate-800 text-white rounded-2xl outline-none focus:border-indigo-500 border border-transparent font-bold text-xs" placeholder="Username / NISN">
-                                <input id="login-pass" type="password" autocomplete="off" class="w-full p-4 bg-slate-800 text-white rounded-2xl outline-none focus:border-indigo-500 border border-transparent font-bold text-xs" placeholder="Password">
+                                <!-- Penggunaan type="text" dengan class hide-password untuk mencegah peringatan browser -->
+                                <input id="login-pass" type="text" autocomplete="off" class="hide-password w-full p-4 bg-slate-800 text-white rounded-2xl outline-none focus:border-indigo-500 border border-transparent font-bold text-xs" placeholder="Password">
                                 <p id="login-error" class="text-red-500 text-[9px] font-black uppercase text-center min-h-[1rem]"></p>
                                 <button onclick="window.handleLogin('${isAdmin ? 'admin' : 'voter'}')" class="w-full py-5 grad-primary text-white font-black rounded-2xl uppercase text-[10px] tracking-widest active:scale-95 transition-all">Masuk</button>
                             </div>
@@ -376,48 +367,30 @@
                                     </div>`;
                                 }).join('')}
                             </div>
-
-                            <!-- Tabel Rekapitulasi Suara -->
+                            <!-- Tabel Rekapitulasi -->
                             <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5 overflow-hidden">
-                                <div class="flex items-center justify-between mb-8">
-                                    <h3 class="text-xs font-black text-white uppercase tracking-widest">Tabel Perolehan Suara</h3>
-                                    <span class="text-[10px] font-black text-slate-500 uppercase">Live Update</span>
-                                </div>
+                                <h3 class="text-xs font-black text-white uppercase tracking-widest mb-6 pl-2 border-l-4 border-indigo-500">Tabel Perolehan Suara</h3>
                                 <div class="overflow-x-auto">
                                     <table class="w-full text-left">
                                         <thead>
-                                            <tr class="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-white/5">
-                                                <th class="pb-4 pl-4 uppercase">No. Paslon</th>
-                                                <th class="pb-4 uppercase">Kandidat</th>
-                                                <th class="pb-4 uppercase text-center">Jumlah Suara</th>
-                                                <th class="pb-4 uppercase text-right pr-4">Persentase</th>
+                                            <tr class="text-[10px] font-black text-slate-500 uppercase border-b border-white/5">
+                                                <th class="py-4 pl-4">Pos</th>
+                                                <th class="py-4">Kandidat</th>
+                                                <th class="py-4 text-center">Suara</th>
+                                                <th class="py-4 text-right pr-4">Persen</th>
                                             </tr>
                                         </thead>
                                         <tbody class="divide-y divide-white/5">
                                             ${candidates.sort((a,b) => b.votes - a.votes).map((c, i) => {
                                                 const p = votedCount > 0 ? ((c.votes/votedCount)*100).toFixed(1) : 0;
-                                                return `<tr class="group hover:bg-white/5 transition-all">
-                                                    <td class="py-5 pl-4 font-black text-xs text-slate-500 italic">#${i+1}</td>
-                                                    <td class="py-5">
-                                                        <div class="flex items-center gap-3">
-                                                            <img src="${c.photo}" class="w-8 h-8 rounded-lg object-cover">
-                                                            <span class="font-black text-xs text-white uppercase tracking-tight">${c.name}</span>
-                                                        </div>
-                                                    </td>
-                                                    <td class="py-5 text-center font-black text-indigo-500 text-sm">${c.votes}</td>
-                                                    <td class="py-5 text-right pr-4">
-                                                        <span class="bg-indigo-500/10 text-indigo-500 px-3 py-1 rounded-full text-[10px] font-black">${p}%</span>
-                                                    </td>
+                                                return `<tr class="hover:bg-white/5 transition-all text-xs">
+                                                    <td class="py-5 pl-4 font-black text-slate-500">#${i+1}</td>
+                                                    <td class="py-5 font-black text-white uppercase tracking-tight">${c.name}</td>
+                                                    <td class="py-5 text-center font-black text-indigo-500">${c.votes}</td>
+                                                    <td class="py-5 text-right pr-4"><span class="bg-indigo-500/10 text-indigo-500 px-3 py-1 rounded-full font-black text-[10px]">${p}%</span></td>
                                                 </tr>`;
                                             }).join('')}
                                         </tbody>
-                                        <tfoot>
-                                            <tr class="bg-indigo-500/5">
-                                                <td colspan="2" class="py-5 pl-4 font-black text-xs text-indigo-500 uppercase tracking-widest italic">Total Partisipasi</td>
-                                                <td class="py-5 text-center font-black text-white text-sm">${votedCount}</td>
-                                                <td class="py-5 text-right pr-4 font-black text-slate-500 text-[10px] uppercase">100%</td>
-                                            </tr>
-                                        </tfoot>
                                     </table>
                                 </div>
                             </div>
@@ -428,7 +401,7 @@
                                 <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5 h-fit">
                                     <h3 class="text-xs font-black text-indigo-500 uppercase mb-6">Tambah Kandidat</h3>
                                     <div class="space-y-4">
-                                        <input id="c-name" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none border border-transparent focus:border-indigo-500" placeholder="Nama Paslon">
+                                        <input id="c-name" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none" placeholder="Nama Paslon">
                                         <input id="c-photo" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none" placeholder="URL Foto">
                                         <textarea id="c-vision" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none h-24" placeholder="Visi"></textarea>
                                         <textarea id="c-mission" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none h-24" placeholder="Misi"></textarea>
@@ -459,7 +432,7 @@
                                             <input id="v-nisn" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none" placeholder="NISN">
                                             <input id="v-class" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none" placeholder="Kelas">
                                         </div>
-                                        <input id="v-pass" class="no-chrome-warning w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none" placeholder="Sandi Login">
+                                        <input id="v-pass" type="text" class="hide-password w-full p-4 bg-slate-800 text-white rounded-2xl text-xs font-bold outline-none" placeholder="Sandi Login">
                                         <button onclick="window.addVoter()" class="w-full py-4 bg-white text-slate-900 font-black rounded-2xl text-[10px] uppercase tracking-widest">Daftar Siswa</button>
                                     </div>
                                 </div>
@@ -472,23 +445,20 @@
                                                     <p class="text-[10px] font-black text-white uppercase">${v.name}</p>
                                                     <p class="text-[8px] text-slate-500 font-bold">${v.nisn} • ${v.class} ${v.hasVoted ? '• <span class="text-emerald-500">SUDAH VOTE</span>' : ''}</p>
                                                 </div>
-                                                <button onclick="window.showModal('HAPUS', 'Hapus siswa ${v.name}? Jika sudah vote, suara kandidat akan dikurangi otomatis.', () => window.deleteVoter('${v.nisn}'))" class="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                                <button onclick="window.showModal('HAPUS', 'Hapus siswa ${v.name}?', () => window.deleteVoter('${v.nisn}'))" class="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
                                             </div>
                                         `).join('')}
                                     </div>
                                 </div>
                             </div>
                         ` : ''}
-
+                        
                         ${adminTab === 'settings' ? `
-                            <div class="bg-slate-900 p-12 rounded-[4rem] border border-white/5 max-w-xl mx-auto">
-                                <div class="w-16 h-16 bg-indigo-500/10 text-indigo-500 rounded-3xl flex items-center justify-center mb-8"><i data-lucide="bell"></i></div>
-                                <h3 class="text-xl font-black text-white uppercase mb-2 italic">Notifikasi<span class="text-indigo-500 font-normal">Discord</span></h3>
-                                <p class="text-[10px] text-slate-500 font-black uppercase mb-8 tracking-widest leading-relaxed">Masukkan URL Webhook Discord untuk menerima notifikasi real-time setiap kali ada siswa yang memberikan suara.</p>
-                                <div class="space-y-4">
-                                    <input id="discord-url" type="text" class="w-full p-5 bg-slate-800 text-white rounded-3xl text-xs font-bold outline-none border border-transparent focus:border-indigo-500" value="${discordWebhook}" placeholder="https://discord.com/api/webhooks/...">
-                                    <button onclick="window.updateWebhook()" class="w-full py-5 grad-primary text-white font-black rounded-3xl text-[10px] uppercase tracking-widest active:scale-95 transition-all">Simpan Pengaturan</button>
-                                </div>
+                            <div class="bg-slate-900 p-12 rounded-[4rem] border border-white/5 max-w-xl mx-auto text-center">
+                                <div class="w-16 h-16 bg-indigo-500/10 text-indigo-500 rounded-3xl flex items-center justify-center mb-8 mx-auto"><i data-lucide="bell"></i></div>
+                                <h3 class="text-xl font-black text-white uppercase mb-4 italic">Discord Webhook</h3>
+                                <input id="discord-url" type="text" class="w-full p-5 bg-slate-800 text-white rounded-3xl text-xs font-bold outline-none mb-4" value="${discordWebhook}" placeholder="https://discord.com/api/webhooks/...">
+                                <button onclick="window.updateWebhook()" class="w-full py-5 grad-primary text-white font-black rounded-3xl text-[10px] uppercase tracking-widest">Simpan Pengaturan</button>
                             </div>
                         ` : ''}
                     </div>
@@ -501,11 +471,11 @@
                             <p class="text-[10px] font-black text-indigo-500 uppercase tracking-widest mt-2">${currentUser.class}</p>
                         </header>
                         ${currentUser.hasVoted ? `
-                            <div class="bg-slate-900 p-12 rounded-[4rem] border border-white/5 text-center max-w-lg mx-auto">
+                            <div class="bg-slate-900 p-12 rounded-[4rem] border border-white/5 text-center max-w-[400px] mx-auto">
                                 <div class="w-20 h-20 bg-emerald-500/10 text-emerald-500 rounded-3xl flex items-center justify-center mx-auto mb-8 text-3xl"><i data-lucide="check-circle-2"></i></div>
-                                <h3 class="text-xl font-black text-white uppercase mb-3">Selesai!</h3>
-                                <p class="text-[10px] text-slate-500 font-black uppercase mb-10 tracking-widest">Suara Anda telah masuk ke sistem.</p>
-                                <button onclick="window.logout()" class="px-12 py-5 grad-primary text-white font-black rounded-2xl text-[10px] uppercase tracking-widest active:scale-95">Keluar Sesi</button>
+                                <h3 class="text-xl font-black text-white uppercase mb-3 text-center">Terima Kasih!</h3>
+                                <p class="text-[10px] text-slate-500 font-black uppercase mb-10 tracking-widest">Suara anda sangat berharga.</p>
+                                <button onclick="window.logout()" class="w-full py-5 grad-primary text-white font-black rounded-2xl text-[10px] uppercase tracking-widest active:scale-95">Keluar Sesi</button>
                             </div>
                         ` : `
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -516,7 +486,7 @@
                                             <div class="absolute -top-3 -right-3 w-12 h-12 grad-primary text-white rounded-2xl flex items-center justify-center font-black text-xl">${i+1}</div>
                                         </div>
                                         <h4 class="text-xl font-black text-white uppercase tracking-tight mb-8">${c.name}</h4>
-                                        <button onclick="window.showModal('KONFIRMASI', 'Berikan suara untuk ${c.name}?', () => window.castVote('${c.id}'))" class="w-full py-5 bg-white text-slate-900 font-black rounded-3xl text-[10px] uppercase hover:bg-indigo-500 hover:text-white transition-all active:scale-95">Pilih Sekarang</button>
+                                        <button onclick="window.showModal('KONFIRMASI', 'Pilih ${c.name} sebagai Ketua OSIS?', () => window.castVote('${c.id}'))" class="w-full py-5 bg-white text-slate-900 font-black rounded-3xl text-[10px] uppercase hover:bg-indigo-500 hover:text-white transition-all active:scale-95">Pilih Sekarang</button>
                                     </div>
                                 `).join('')}
                             </div>
@@ -529,7 +499,7 @@
             lucide.createIcons();
         };
 
-        window.renderLogin = (type) => { currentView = type + '-login'; localStorage.setItem('current_view', currentView); window.render(); };
+        window.renderLogin = (type) => { currentView = type + '-login'; window.render(); };
         window.onload = startApp;
     </script>
 </head>
