@@ -253,18 +253,36 @@
             } catch (e) { console.error(e); }
         };
 
+        // FIXED: Memperbaiki referensi ID yang salah dan menghapus elemen yang tidak ada
         window.addCandidate = async () => {
-            const name = document.getElementById('c-name').value;
-            const vision = document.getElementById('c-vision').value;
-            const mission = document.getElementById('c-mission').value;
-            const photo = document.getElementById('c-photo').value || "https://ui-avatars.com/api/?name=" + name;
-            if (!name) return;
+            const nameEl = document.getElementById('c-name');
+            const visionEl = document.getElementById('c-vision');
+            const photoEl = document.getElementById('c-photo');
+
+            if (!nameEl || !nameEl.value.trim()) {
+                window.showModal("ERROR", "Nama kandidat tidak boleh kosong!", null, true);
+                return;
+            }
+
+            const name = nameEl.value.trim();
+            const vision = visionEl ? visionEl.value.trim() : "";
+            const photo = (photoEl && photoEl.value.trim()) ? photoEl.value.trim() : "https://ui-avatars.com/api/?name=" + encodeURIComponent(name);
+
             try {
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'candidates'), {
-                    name, photo, vision, mission, votes: 0
+                    name, photo, vision, votes: 0
                 });
+                
+                // Reset fields
+                nameEl.value = "";
+                if (visionEl) visionEl.value = "";
+                if (photoEl) photoEl.value = "";
+                
                 window.showModal("SUKSES", "Kandidat berhasil ditambahkan!", null, true);
-            } catch (e) { console.error(e); }
+            } catch (e) { 
+                console.error(e); 
+                window.showModal("GAGAL", "Gagal menyimpan data kandidat.", null, true);
+            }
         };
 
         window.deleteCandidate = async (id) => {
@@ -285,17 +303,14 @@
             } catch (e) { console.error(e); }
         };
 
-        // FIXED: Menghapus voter sekaligus mengurangi jumlah suara kandidat jika voter sudah memilih
         window.deleteVoter = async (nisn) => {
             try {
                 const voter = voters.find(v => v.nisn === nisn);
                 if (voter && voter.hasVoted && voter.votedFor) {
-                    // Kurangi jumlah suara dari kandidat terkait
                     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', voter.votedFor), { 
                         votes: increment(-1) 
                     });
                 }
-                // Hapus data pemilih
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn));
             } catch (e) {
                 console.error("Gagal menghapus voter:", e);
