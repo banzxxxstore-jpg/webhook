@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E-Voting OSIS v5 - Fixed Edition</title>
+    <title>E-Voting OSIS v5 - Ultimate Edition</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
@@ -32,8 +32,8 @@
             background: linear-gradient(135deg, #6366f1 0%, #4338ca 100%);
         }
 
-        .grad-whatsapp {
-            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+        .grad-danger {
+            background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
         }
 
         .custom-scrollbar::-webkit-scrollbar { width: 5px; }
@@ -52,11 +52,16 @@
         .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
         input:checked + .slider { background-color: #6366f1; }
         input:checked + .slider:before { transform: translateX(20px); }
+
+        .countdown-card {
+            background: linear-gradient(180deg, rgba(99, 102, 241, 0.1) 0%, rgba(99, 102, 241, 0) 100%);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+        }
     </style>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, deleteDoc, increment, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, deleteDoc, increment, addDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDFD_ZOL4RAyaadaGdk5PJb8BIwG6GInOE",
@@ -80,12 +85,15 @@
         let discordWebhook = '';
         let discordEnabled = false;
         let whatsappConfig = { token: '', target: '', enabled: false };
+        let timerEnd = null;
+        let isExpired = false;
+        let hasAnnounced = false;
 
         let modalConfig = { show: false, title: '', message: '', onConfirm: null, isAlert: false };
 
         async function startApp() {
             try {
-                appId = typeof __app_id !== 'undefined' ? __app_id : 'osis-evoting-v5-fixed';
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'osis-evoting-v5-ultimate';
                 const app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
@@ -100,6 +108,13 @@
                     if (user) startDataListeners();
                     window.render();
                 });
+
+                setInterval(() => {
+                    checkTimer();
+                    // Update only the countdown text elements to save performance
+                    const timerEls = document.querySelectorAll('.live-timer-text');
+                    timerEls.forEach(el => el.innerText = window.getCountdownStr());
+                }, 1000);
             } catch (err) { console.error(err); }
         }
 
@@ -131,12 +146,65 @@
                         target: data.wa_target || '',
                         enabled: data.waEnabled || false
                     };
+                    timerEnd = data.timerEnd || null;
+                    hasAnnounced = data.hasAnnounced || false;
                     window.render();
                 }
             });
         }
 
-        // Global functions
+        function checkTimer() {
+            if (!timerEnd) return;
+            const now = new Date().getTime();
+            const end = new Date(timerEnd).getTime();
+            const distance = end - now;
+
+            if (distance < 0 && !isExpired) {
+                isExpired = true;
+                if (!hasAnnounced && candidates.length > 0) {
+                    announceWinner();
+                }
+                window.render();
+            } else if (distance > 0 && isExpired) {
+                isExpired = false;
+                window.render();
+            }
+        }
+
+        async function announceWinner() {
+            if (hasAnnounced) return;
+            
+            const sorted = [...candidates].sort((a, b) => (b.votes || 0) - (a.votes || 0));
+            const winner = sorted[0];
+            const totalVoters = voters.length;
+            const votedCount = voters.filter(v => v.hasVoted).length;
+
+            const message = `🏆 *HASIL AKHIR E-VOTING OSIS*\n\nBilik suara resmi ditutup.\n\n🥇 *PEMENANG:* ${winner.name}\n📊 Perolehan: ${winner.votes} Suara\n\n📈 *STATISTIK:* \n- Partisipasi: ${Math.round((votedCount/totalVoters)*100)}%\n- Total Suara Masuk: ${votedCount}\n\nTerima kasih atas partisipasi seluruh siswa!`;
+
+            try {
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'notifications'), { hasAnnounced: true });
+                
+                if (whatsappConfig.enabled && whatsappConfig.token && whatsappConfig.target) {
+                    const formData = new FormData();
+                    formData.append('target', whatsappConfig.target);
+                    formData.append('message', message);
+                    fetch('https://api.fonnte.com/send', {
+                        method: 'POST',
+                        headers: { 'Authorization': whatsappConfig.token },
+                        body: formData
+                    });
+                }
+
+                const batch = writeBatch(db);
+                candidates.forEach(c => {
+                    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'candidates', c.id);
+                    batch.delete(ref);
+                });
+                await batch.commit();
+
+            } catch (e) { console.error("Error announcing winner:", e); }
+        }
+
         window.showModal = (title, message, onConfirm = null, isAlert = false) => {
             modalConfig = { show: true, title, message, onConfirm, isAlert };
             window.render();
@@ -189,28 +257,33 @@
             window.render();
         };
 
-        window.updateNotifications = async () => {
+        window.updateSettings = async () => {
             const discord = document.getElementById('discord-url').value.trim();
             const wa_token = document.getElementById('wa-token').value.trim();
             const wa_target = document.getElementById('wa-target').value.trim();
             const dEnabled = document.getElementById('discord-toggle').checked;
             const wEnabled = document.getElementById('wa-toggle').checked;
+            const timerVal = document.getElementById('timer-val').value;
 
             try {
                 await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'notifications'), { 
                     discord, discordEnabled: dEnabled,
-                    wa_token, wa_target, waEnabled: wEnabled 
+                    wa_token, wa_target, waEnabled: wEnabled,
+                    timerEnd: timerVal || null,
+                    hasAnnounced: false
                 });
-                window.showModal("SUKSES", "Konfigurasi notifikasi berhasil diperbarui!", null, true);
+                window.showModal("SUKSES", "Pengaturan & Waktu berhasil diperbarui!", null, true);
             } catch (e) { console.error(e); }
         };
 
         window.castVote = async (candId) => {
+            if (isExpired) {
+                window.showModal("DITUTUP", "Maaf, waktu voting sudah habis!", null, true);
+                return;
+            }
             if (!currentUser || currentUser.hasVoted) return;
             const cand = candidates.find(c => c.id === candId);
             const nextVotes = (cand.votes || 0) + 1;
-            const now = new Date();
-            const timeStr = now.toLocaleTimeString('id-ID');
             
             try {
                 await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', candId), { votes: increment(1) });
@@ -225,64 +298,35 @@
                                 title: "📩 Suara Baru Masuk!",
                                 color: 5814783,
                                 fields: [
-                                    { name: "Waktu", value: `**${timeStr}**`, inline: true },
-                                    { name: "Total Suara", value: `**${nextVotes} Suara**`, inline: true },
                                     { name: "Kandidat", value: cand.name, inline: false },
-                                    { name: "Pemilih", value: `||${currentUser.name} (${currentUser.class})||`, inline: false }
+                                    { name: "Total Suara", value: `${nextVotes}`, inline: true }
                                 ],
-                                timestamp: now.toISOString()
+                                timestamp: new Date().toISOString()
                             }]
                         })
-                    }).catch(e => console.log("Discord error:", e));
+                    });
                 }
-
-                if (whatsappConfig.enabled && whatsappConfig.token && whatsappConfig.target) {
-                    const message = `📩 *NOTIFIKASI VOTE*\n\nSuara masuk pukul: *${timeStr}*\n\n🗳️ *${cand.name}*\n📊 Total Voting: ${nextVotes} Suara\n\n👤 Pemilih: ${currentUser.name}\n🏫 Kelas: ${currentUser.class}`;
-                    const formData = new FormData();
-                    formData.append('target', whatsappConfig.target);
-                    formData.append('message', message);
-
-                    fetch('https://api.fonnte.com/send', {
-                        method: 'POST',
-                        headers: { 'Authorization': whatsappConfig.token },
-                        body: formData
-                    }).catch(e => console.log("WA error:", e));
-                }
-                
                 window.render();
             } catch (e) { console.error(e); }
         };
 
-        // FIXED: Memperbaiki referensi ID yang salah dan menghapus elemen yang tidak ada
         window.addCandidate = async () => {
             const nameEl = document.getElementById('c-name');
             const visionEl = document.getElementById('c-vision');
             const photoEl = document.getElementById('c-photo');
-
-            if (!nameEl || !nameEl.value.trim()) {
-                window.showModal("ERROR", "Nama kandidat tidak boleh kosong!", null, true);
-                return;
-            }
+            if (!nameEl || !nameEl.value.trim()) return;
 
             const name = nameEl.value.trim();
-            const vision = visionEl ? visionEl.value.trim() : "";
-            const photo = (photoEl && photoEl.value.trim()) ? photoEl.value.trim() : "https://ui-avatars.com/api/?name=" + encodeURIComponent(name);
+            const vision = visionEl.value.trim();
+            const photo = photoEl.value.trim() || "https://ui-avatars.com/api/?name=" + encodeURIComponent(name);
 
             try {
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'candidates'), {
                     name, photo, vision, votes: 0
                 });
-                
-                // Reset fields
-                nameEl.value = "";
-                if (visionEl) visionEl.value = "";
-                if (photoEl) photoEl.value = "";
-                
+                nameEl.value = ""; visionEl.value = ""; photoEl.value = "";
                 window.showModal("SUKSES", "Kandidat berhasil ditambahkan!", null, true);
-            } catch (e) { 
-                console.error(e); 
-                window.showModal("GAGAL", "Gagal menyimpan data kandidat.", null, true);
-            }
+            } catch (e) { console.error(e); }
         };
 
         window.deleteCandidate = async (id) => {
@@ -304,72 +348,73 @@
         };
 
         window.deleteVoter = async (nisn) => {
-            try {
-                const voter = voters.find(v => v.nisn === nisn);
-                if (voter && voter.hasVoted && voter.votedFor) {
-                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', voter.votedFor), { 
-                        votes: increment(-1) 
-                    });
-                }
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn));
-            } catch (e) {
-                console.error("Gagal menghapus voter:", e);
+            const voter = voters.find(v => v.nisn === nisn);
+            if (voter && voter.hasVoted && voter.votedFor) {
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', voter.votedFor), { 
+                    votes: increment(-1) 
+                });
             }
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn));
         };
 
         window.toggleSidebar = () => { showSidebar = !showSidebar; window.render(); };
         window.setAdminTab = (tab) => { adminTab = tab; showSidebar = false; window.render(); };
 
+        window.getCountdownStr = () => {
+            if (!timerEnd) return "BELUM DISET";
+            const distance = new Date(timerEnd).getTime() - new Date().getTime();
+            if (distance < 0) return "WAKTU HABIS";
+            
+            const h = Math.floor(distance / (1000 * 60 * 60));
+            const m = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+            const s = Math.floor((distance % (1000 * 60)) / 1000);
+            
+            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        };
+
         window.render = function() {
             const root = document.getElementById('app-root');
             if (!root) return;
 
-            // Status Badge
+            const isUrgent = timerEnd && (new Date(timerEnd).getTime() - new Date().getTime() < 3600000); // 1 jam sisa
+
             const statusHtml = `<div class="fixed top-6 left-6 z-[100] glass px-4 py-2 rounded-full flex items-center gap-2">
-                <div class="w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}"></div>
-                <span class="text-[8px] font-black text-slate-400 uppercase tracking-widest">${isConnected ? 'ONLINE' : 'CONNECTING'}</span>
+                <div class="w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-red-500'}"></div>
+                <span class="text-[8px] font-black text-slate-400 uppercase tracking-widest">${isConnected ? 'ONLINE' : 'OFFLINE'}</span>
             </div>`;
 
-            // Modal Logic
             const modalHtml = modalConfig.show ? `<div class="fixed inset-0 z-[500] flex items-center justify-center p-6 bg-black/90 backdrop-blur-sm">
-                <div class="bg-slate-900 w-full max-w-[320px] rounded-[2.5rem] p-8 border border-white/10 animate-view">
-                    <h3 class="text-center font-black text-white uppercase mb-2 tracking-tight">${modalConfig.title}</h3>
-                    <p class="text-center text-[11px] text-slate-400 font-bold mb-8">${modalConfig.message}</p>
+                <div class="bg-slate-900 w-full max-w-[320px] rounded-[2.5rem] p-8 border border-white/10 animate-view text-center">
+                    <h3 class="font-black text-white uppercase mb-2">${modalConfig.title}</h3>
+                    <p class="text-[11px] text-slate-400 font-bold mb-8">${modalConfig.message}</p>
                     <div class="flex gap-2">
-                        ${modalConfig.isAlert ? `
-                            <button onclick="window.closeModal()" class="w-full py-4 grad-primary text-white font-black rounded-2xl text-[10px] uppercase tracking-widest">OKE</button>
-                        ` : `
-                            <button onclick="window.closeModal()" class="flex-1 py-4 bg-slate-800 text-slate-300 font-black rounded-2xl text-[9px] uppercase tracking-widest">BATAL</button>
+                        ${modalConfig.isAlert ? `<button onclick="window.closeModal()" class="w-full py-4 grad-primary text-white font-black rounded-2xl text-[10px] uppercase">OKE</button>` : `
+                            <button onclick="window.closeModal()" class="flex-1 py-4 bg-slate-800 text-slate-300 font-black rounded-2xl text-[9px] uppercase">BATAL</button>
                             <button onclick="window.confirmAction()" class="flex-1 py-4 grad-primary text-white font-black rounded-2xl text-[9px] uppercase tracking-widest">YA</button>
                         `}
                     </div>
                 </div>
             </div>` : "";
 
-            // Sidebar Logic
             const sidebarHtml = (currentView === 'admin-panel' && showSidebar) ? `
             <div class="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm" onclick="window.toggleSidebar()">
                 <div class="w-72 h-full bg-slate-950 border-r border-white/5 p-8 flex flex-col" onclick="event.stopPropagation()">
                     <div class="mb-12"><h2 class="text-xl font-black text-white italic">OSIS<span class="text-indigo-500 font-normal">MENU</span></h2></div>
                     <nav class="space-y-2 flex-1">
                         <button onclick="window.setAdminTab('dashboard')" class="w-full flex items-center gap-4 p-4 rounded-2xl ${adminTab === 'dashboard' ? 'grad-primary text-white' : 'text-slate-400 hover:bg-white/5'} text-left">
-                            <i data-lucide="bar-chart-3" class="w-5 h-5"></i>
-                            <span class="text-xs font-black uppercase tracking-widest">Hasil Vote</span>
+                            <i data-lucide="bar-chart-3" class="w-5 h-5"></i> <span class="text-xs font-black uppercase">Hasil Vote</span>
                         </button>
                         <button onclick="window.setAdminTab('candidates')" class="w-full flex items-center gap-4 p-4 rounded-2xl ${adminTab === 'candidates' ? 'grad-primary text-white' : 'text-slate-400 hover:bg-white/5'} text-left">
-                            <i data-lucide="users" class="w-5 h-5"></i>
-                            <span class="text-xs font-black uppercase tracking-widest">Kandidat</span>
+                            <i data-lucide="users" class="w-5 h-5"></i> <span class="text-xs font-black uppercase">Kandidat</span>
                         </button>
                         <button onclick="window.setAdminTab('voters')" class="w-full flex items-center gap-4 p-4 rounded-2xl ${adminTab === 'voters' ? 'grad-primary text-white' : 'text-slate-400 hover:bg-white/5'} text-left">
-                            <i data-lucide="user-check" class="w-5 h-5"></i>
-                            <span class="text-xs font-black uppercase tracking-widest">Pemilih</span>
+                            <i data-lucide="user-check" class="w-5 h-5"></i> <span class="text-xs font-black uppercase">Siswa</span>
                         </button>
                         <button onclick="window.setAdminTab('settings')" class="w-full flex items-center gap-4 p-4 rounded-2xl ${adminTab === 'settings' ? 'grad-primary text-white' : 'text-slate-400 hover:bg-white/5'} text-left">
-                            <i data-lucide="settings" class="w-5 h-5"></i>
-                            <span class="text-xs font-black uppercase tracking-widest">Pengaturan</span>
+                            <i data-lucide="settings" class="w-5 h-5"></i> <span class="text-xs font-black uppercase">Pengaturan</span>
                         </button>
                     </nav>
-                    <button onclick="window.logout()" class="p-4 flex items-center gap-4 text-red-500 font-black text-xs uppercase tracking-widest"><i data-lucide="log-out"></i> Keluar</button>
+                    <button onclick="window.logout()" class="p-4 flex items-center gap-4 text-red-500 font-black text-xs uppercase"><i data-lucide="log-out"></i> Keluar</button>
                 </div>
             </div>` : "";
 
@@ -378,16 +423,16 @@
             if (currentView === 'selection') {
                 content = `<div class="min-h-screen flex flex-col items-center justify-center p-6 animate-view">
                     <div class="text-center mb-16">
-                        <h1 class="text-3xl font-black text-white italic tracking-tighter uppercase leading-tight">E-VOTING<br><span class="text-indigo-500 font-normal">OSIS PRO v5</span></h1>
+                        <h1 class="text-3xl font-black text-white italic uppercase tracking-tighter">E-VOTING<br><span class="text-indigo-500 font-normal">OSIS PRO v5</span></h1>
                     </div>
                     <div class="w-full max-w-[320px] space-y-4">
                         <button onclick="window.setView('voter-login')" class="w-full bg-slate-900 p-6 rounded-[2rem] border border-white/10 flex items-center gap-4 active:scale-95 transition-all">
                             <div class="w-12 h-12 grad-primary rounded-2xl flex items-center justify-center text-white"><i data-lucide="user"></i></div>
-                            <div class="text-left"><p class="font-black text-white text-sm uppercase">Siswa</p><p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Masuk Bilik</p></div>
+                            <div class="text-left"><p class="font-black text-white text-sm uppercase">Siswa</p><p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Login Bilik</p></div>
                         </button>
                         <button onclick="window.setView('admin-login')" class="w-full bg-slate-900/50 p-6 rounded-[2rem] border border-white/5 flex items-center gap-4 active:scale-95 transition-all">
                             <div class="w-12 h-12 bg-slate-800 rounded-2xl flex items-center justify-center text-slate-500"><i data-lucide="lock"></i></div>
-                            <div class="text-left"><p class="font-black text-white text-sm uppercase">Admin</p><p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Otoritas</p></div>
+                            <div class="text-left"><p class="font-black text-white text-sm uppercase">Admin</p><p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Kontrol Utama</p></div>
                         </button>
                     </div>
                 </div>`;
@@ -399,67 +444,96 @@
                         <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5">
                             <h2 class="text-xl font-black text-white mb-8 italic uppercase">${isAdmin ? 'Admin' : 'Siswa'}<span class="text-indigo-500 ml-1 font-normal">Login</span></h2>
                             <div class="space-y-4">
-                                <input id="login-user" type="text" autocomplete="off" class="w-full p-4 bg-slate-800 text-white rounded-2xl outline-none focus:border-indigo-500 border border-transparent font-bold text-xs" placeholder="${isAdmin ? 'Username' : 'NISN'}">
-                                <input id="login-pass" type="text" autocomplete="off" class="hide-password w-full p-4 bg-slate-800 text-white rounded-2xl outline-none focus:border-indigo-500 border border-transparent font-bold text-xs" placeholder="Password">
+                                <input id="login-user" type="text" class="w-full p-4 bg-slate-800 text-white rounded-2xl outline-none focus:border-indigo-500 border border-transparent font-bold text-xs" placeholder="${isAdmin ? 'Username' : 'NISN'}">
+                                <input id="login-pass" type="text" class="hide-password w-full p-4 bg-slate-800 text-white rounded-2xl outline-none focus:border-indigo-500 border border-transparent font-bold text-xs" placeholder="Password">
                                 <p id="login-error" class="text-red-500 text-[9px] font-black uppercase text-center min-h-[1.2rem]"></p>
-                                <button onclick="window.handleLogin('${isAdmin ? 'admin' : 'voter'}')" class="w-full py-5 grad-primary text-white font-black rounded-2xl uppercase text-[10px] tracking-widest active:scale-95 transition-all shadow-xl shadow-indigo-500/20">Masuk</button>
+                                <button onclick="window.handleLogin('${isAdmin ? 'admin' : 'voter'}')" class="w-full py-5 grad-primary text-white font-black rounded-2xl uppercase text-[10px] shadow-xl shadow-indigo-500/20 active:scale-95 transition-all">Masuk</button>
                             </div>
                         </div>
                     </div>
                 </div>`;
             } else if (currentView === 'voter-panel') {
-                if (currentUser.hasVoted) {
+                if (isExpired) {
+                    content = `<div class="min-h-screen flex items-center justify-center p-6 text-center animate-view">
+                        <div class="bg-slate-900 p-10 rounded-[3rem] border border-white/5 max-w-sm w-full">
+                            <div class="w-20 h-20 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6"><i data-lucide="clock"></i></div>
+                            <h2 class="text-xl font-black text-white uppercase mb-2">Bilik Ditutup</h2>
+                            <p class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-8">Waktu pemilihan telah berakhir.</p>
+                            <button onclick="window.logout()" class="w-full py-4 bg-slate-800 text-white font-black rounded-2xl text-[10px] uppercase">Logout</button>
+                        </div>
+                    </div>`;
+                } else if (currentUser.hasVoted) {
                     content = `<div class="min-h-screen flex items-center justify-center p-6 text-center animate-view">
                         <div class="bg-slate-900 p-10 rounded-[3rem] border border-white/5 max-w-sm w-full">
                             <div class="w-20 h-20 bg-emerald-500/10 text-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6"><i data-lucide="check-circle" class="w-10 h-10"></i></div>
-                            <h2 class="text-xl font-black text-white uppercase mb-2">Terima Kasih!</h2>
-                            <p class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-8">Pilihan Anda Sudah Disimpan.</p>
-                            <button onclick="window.logout()" class="w-full py-4 bg-slate-800 text-white font-black rounded-2xl text-[10px] uppercase tracking-widest">Logout</button>
+                            <h2 class="text-xl font-black text-white uppercase mb-2">Sudah Memilih</h2>
+                            <p class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-8">Terima kasih atas suaranya!</p>
+                            <button onclick="window.logout()" class="w-full py-4 bg-slate-800 text-white font-black rounded-2xl text-[10px] uppercase">Logout</button>
                         </div>
                     </div>`;
                 } else {
                     content = `<div class="min-h-screen p-6 pt-24 max-w-2xl mx-auto animate-view">
-                        <div class="mb-12"><h2 class="text-2xl font-black text-white uppercase italic tracking-tighter">SURAT <span class="text-indigo-500">SUARA</span></h2></div>
+                        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+                            <h2 class="text-2xl font-black text-white uppercase italic">SURAT <span class="text-indigo-500">SUARA</span></h2>
+                            ${timerEnd ? `
+                            <div class="flex items-center gap-3 px-6 py-3 rounded-2xl glass border-indigo-500/20">
+                                <div class="w-2 h-2 rounded-full ${isUrgent ? 'bg-red-500 animate-pulse' : 'bg-indigo-500'}"></div>
+                                <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Waktu Tersisa:</span>
+                                <span class="text-xs font-black ${isUrgent ? 'text-red-400' : 'text-indigo-400'} live-timer-text">${window.getCountdownStr()}</span>
+                            </div>` : ''}
+                        </div>
                         <div class="grid grid-cols-1 gap-6 pb-12">
-                            ${candidates.map(c => `
+                            ${candidates.length > 0 ? candidates.map(c => `
                                 <div class="bg-slate-900 p-6 rounded-[2.5rem] border border-white/5 flex flex-col md:flex-row items-center gap-6">
                                     <img src="${c.photo}" class="w-32 h-32 rounded-3xl object-cover ring-4 ring-slate-800">
                                     <div class="flex-1 text-center md:text-left">
                                         <h3 class="font-black text-white uppercase mb-1 tracking-tight">${c.name}</h3>
-                                        <p class="text-[10px] text-slate-500 font-bold uppercase mb-4 leading-relaxed line-clamp-2">${c.vision || 'Visi & Misi Belum Diisi'}</p>
-                                        <button onclick="window.showModal('KONFIRMASI', 'Berikan suara untuk ${c.name}?', () => window.castVote('${c.id}'))" class="px-8 py-3 grad-primary text-white font-black rounded-2xl text-[9px] uppercase tracking-widest active:scale-95 transition-all">Pilih Paslon</button>
+                                        <p class="text-[10px] text-slate-500 font-bold mb-4 line-clamp-2">${c.vision || 'Tanpa Visi Misi'}</p>
+                                        <button onclick="window.showModal('KONFIRMASI', 'Berikan suara untuk ${c.name}?', () => window.castVote('${c.id}'))" class="px-8 py-3 grad-primary text-white font-black rounded-2xl text-[9px] uppercase active:scale-95 transition-all">Pilih Paslon</button>
                                     </div>
                                 </div>
-                            `).join('')}
+                            `).join('') : '<p class="text-center text-slate-500 uppercase font-black text-xs">Belum ada kandidat terdaftar.</p>'}
                         </div>
                     </div>`;
                 }
             } else if (currentView === 'admin-panel') {
                 const votedCount = voters.filter(v => v.hasVoted).length;
-                content = `<div class="min-h-screen p-4 md:p-8 pt-24 animate-view">
-                    <div class="max-w-5xl mx-auto pb-20">
+                content = `<div class="min-h-screen p-4 md:p-8 pt-24 animate-view max-w-5xl mx-auto pb-20">
                         <header class="bg-slate-900 p-6 rounded-[2.5rem] flex justify-between items-center border border-white/10 mb-8">
-                            <button onclick="window.toggleSidebar()" class="w-12 h-12 bg-slate-800 rounded-2xl flex items-center justify-center text-white active:scale-90 transition-all"><i data-lucide="layout-grid"></i></button>
-                            <div class="text-right">
-                                <p class="text-[10px] font-black text-slate-500 uppercase tracking-widest">Partisipasi</p>
-                                <p class="text-lg font-black text-indigo-500">${votedCount} / ${voters.length}</p>
+                            <button onclick="window.toggleSidebar()" class="w-12 h-12 bg-slate-800 rounded-2xl flex items-center justify-center text-white active:scale-90 transition-all"><i data-lucide="menu"></i></button>
+                            <div class="flex gap-8">
+                                <div class="text-right hidden sm:block">
+                                    <p class="text-[10px] font-black text-slate-500 uppercase">Siswa Terdaftar</p>
+                                    <p class="text-lg font-black text-white">${voters.length}</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="text-[10px] font-black text-slate-500 uppercase">Suara Masuk</p>
+                                    <p class="text-lg font-black text-indigo-500">${votedCount}</p>
+                                </div>
                             </div>
                         </header>
 
                         ${adminTab === 'dashboard' ? `
+                            ${timerEnd ? `
+                            <div class="w-full p-10 rounded-[3rem] mb-8 flex flex-col items-center justify-center text-center countdown-card border">
+                                <p class="text-[10px] font-black text-indigo-400 uppercase tracking-[0.3em] mb-4">Sisa Waktu Pemilihan</p>
+                                <h1 class="text-6xl md:text-8xl font-black ${isUrgent ? 'text-red-500' : 'text-white'} tracking-tighter live-timer-text tabular-nums">${window.getCountdownStr()}</h1>
+                                <p class="mt-6 text-[9px] text-slate-500 font-black uppercase max-w-xs leading-loose">Pemenang akan otomatis diumumkan dan data dibersihkan saat waktu menyentuh nol.</p>
+                            </div>` : ''}
+
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 ${candidates.map(c => {
                                     const p = votedCount > 0 ? Math.round((c.votes/votedCount)*100) : 0;
                                     return `<div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5">
                                         <div class="flex items-center gap-5 mb-8">
-                                            <img src="${c.photo}" class="w-20 h-20 rounded-3xl object-cover ring-4 ring-slate-800">
+                                            <img src="${c.photo}" class="w-20 h-20 rounded-3xl object-cover">
                                             <div>
-                                                <h3 class="font-black text-white uppercase tracking-tight text-sm">${c.name}</h3>
-                                                <p class="text-2xl font-black text-indigo-500">${c.votes} <span class="text-[10px] text-slate-500 uppercase font-bold ml-1">Suara</span></p>
+                                                <h3 class="font-black text-white uppercase text-sm">${c.name}</h3>
+                                                <p class="text-2xl font-black text-indigo-500">${c.votes} <span class="text-[10px] text-slate-500 uppercase font-bold">Suara</span></p>
                                             </div>
                                         </div>
-                                        <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2"><div class="h-full grad-primary transition-all duration-1000" style="width:${p}%"></div></div>
-                                        <p class="text-[10px] font-black text-indigo-500 text-right uppercase tracking-widest">${p}%</p>
+                                        <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2"><div class="h-full grad-primary transition-all" style="width:${p}%"></div></div>
+                                        <p class="text-[10px] font-black text-indigo-500 text-right uppercase">${p}%</p>
                                     </div>`;
                                 }).join('')}
                             </div>
@@ -468,35 +542,50 @@
                         ${adminTab === 'settings' ? `
                             <div class="max-w-xl mx-auto space-y-6">
                                 <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5">
-                                    <div class="flex items-center justify-between mb-6">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 bg-indigo-500/10 text-indigo-500 rounded-xl flex items-center justify-center"><i data-lucide="bell"></i></div>
-                                            <h3 class="text-[10px] font-black text-white uppercase tracking-widest">Discord Notif</h3>
+                                    <div class="flex items-center gap-3 mb-8">
+                                        <div class="w-10 h-10 rounded-xl grad-primary flex items-center justify-center text-white"><i data-lucide="clock"></i></div>
+                                        <div>
+                                            <h3 class="text-xs font-black text-white uppercase">Waktu Selesai</h3>
+                                            <p class="text-[9px] text-slate-500 font-bold uppercase">Atur kapan bilik suara ditutup</p>
                                         </div>
-                                        <label class="switch">
-                                            <input type="checkbox" id="discord-toggle" ${discordEnabled ? 'checked' : ''}>
-                                            <span class="slider"></span>
-                                        </label>
                                     </div>
-                                    <input id="discord-url" type="text" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none mb-2" value="${discordWebhook}" placeholder="Discord Webhook URL">
+                                    
+                                    <div class="relative group">
+                                        <input id="timer-val" type="datetime-local" class="w-full p-6 bg-slate-800/50 text-white rounded-3xl text-sm font-black outline-none border border-white/5 focus:border-indigo-500/50 transition-all" value="${timerEnd || ''}">
+                                        <div class="absolute right-6 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-500"><i data-lucide="calendar" class="w-5 h-5"></i></div>
+                                    </div>
+                                    
+                                    <div class="mt-8 p-6 bg-indigo-500/5 rounded-[2rem] border border-indigo-500/10">
+                                        <div class="flex gap-4">
+                                            <div class="text-indigo-400 pt-1"><i data-lucide="info" class="w-4 h-4"></i></div>
+                                            <p class="text-[9px] text-indigo-300 font-bold uppercase leading-relaxed">Sistem akan otomatis menghitung pemenang dan mengirim notifikasi WhatsApp saat waktu berakhir.</p>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5">
-                                    <div class="flex items-center justify-between mb-6">
+                                    <div class="flex items-center justify-between mb-8">
                                         <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 bg-emerald-500/10 text-emerald-500 rounded-xl flex items-center justify-center"><i data-lucide="message-square"></i></div>
-                                            <h3 class="text-[10px] font-black text-white uppercase tracking-widest">WA Notif (Fonnte)</h3>
+                                            <div class="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center"><i data-lucide="message-circle"></i></div>
+                                            <h3 class="text-xs font-black text-white uppercase">Notifikasi WA</h3>
                                         </div>
-                                        <label class="switch">
-                                            <input type="checkbox" id="wa-toggle" ${whatsappConfig.enabled ? 'checked' : ''}>
-                                            <span class="slider"></span>
-                                        </label>
+                                        <label class="switch"><input type="checkbox" id="wa-toggle" ${whatsappConfig.enabled ? 'checked' : ''}><span class="slider"></span></label>
                                     </div>
-                                    <div class="space-y-3 mb-6">
-                                        <input id="wa-token" type="text" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" value="${whatsappConfig.token}" placeholder="API Token Fonnte">
-                                        <input id="wa-target" type="text" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" value="${whatsappConfig.target}" placeholder="Nomor WA (Target)">
+                                    <div class="space-y-4 mb-10">
+                                        <input id="wa-token" type="password" class="w-full p-5 bg-slate-800/50 text-white rounded-2xl text-[10px] font-bold outline-none border border-white/5" value="${whatsappConfig.token}" placeholder="Fonnte API Token">
+                                        <input id="wa-target" type="text" class="w-full p-5 bg-slate-800/50 text-white rounded-2xl text-[10px] font-bold outline-none border border-white/5" value="${whatsappConfig.target}" placeholder="Nomor Tujuan (Contoh: 0812...)">
                                     </div>
-                                    <button onclick="window.updateNotifications()" class="w-full py-5 grad-whatsapp text-white font-black rounded-2xl text-[10px] uppercase tracking-widest shadow-lg shadow-emerald-500/20 active:scale-95 transition-all">Simpan Konfigurasi</button>
+
+                                    <div class="flex items-center justify-between mb-8 border-t border-white/5 pt-10">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center"><i data-lucide="hash"></i></div>
+                                            <h3 class="text-xs font-black text-white uppercase">Discord</h3>
+                                        </div>
+                                        <label class="switch"><input type="checkbox" id="discord-toggle" ${discordEnabled ? 'checked' : ''}><span class="slider"></span></label>
+                                    </div>
+                                    <input id="discord-url" type="text" class="w-full p-5 bg-slate-800/50 text-white rounded-2xl text-[10px] font-bold outline-none border border-white/5 mb-10" value="${discordWebhook}" placeholder="Discord Webhook URL">
+                                    
+                                    <button onclick="window.updateSettings()" class="w-full py-6 grad-primary text-white font-black rounded-3xl text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-500/20 active:scale-95 transition-all">Terapkan Perubahan</button>
                                 </div>
                             </div>
                         ` : ''}
@@ -509,14 +598,14 @@
                                         <input id="c-name" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" placeholder="Nama Paslon">
                                         <input id="c-photo" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" placeholder="URL Foto">
                                         <textarea id="c-vision" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none h-24" placeholder="Visi & Misi"></textarea>
-                                        <button onclick="window.addCandidate()" class="w-full py-4 grad-primary text-white font-black rounded-2xl text-[10px] uppercase tracking-widest active:scale-95 transition-all">Simpan Paslon</button>
+                                        <button onclick="window.addCandidate()" class="w-full py-4 grad-primary text-white font-black rounded-2xl text-[10px] uppercase active:scale-95 transition-all">Simpan Paslon</button>
                                     </div>
                                 </div>
                                 <div class="space-y-4">
                                     ${candidates.map(c => `
                                         <div class="bg-slate-900 p-6 rounded-[2rem] border border-white/5 flex items-center justify-between">
                                             <div class="flex items-center gap-4">
-                                                <img src="${c.photo}" class="w-12 h-12 rounded-xl object-cover ring-2 ring-slate-800">
+                                                <img src="${c.photo}" class="w-12 h-12 rounded-xl object-cover">
                                                 <p class="font-black text-[10px] uppercase text-white">${c.name}</p>
                                             </div>
                                             <button onclick="window.showModal('HAPUS', 'Hapus kandidat ${c.name}?', () => window.deleteCandidate('${c.id}'))" class="w-10 h-10 bg-red-500/10 text-red-500 rounded-xl flex items-center justify-center active:scale-90"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
@@ -537,7 +626,7 @@
                                             <input id="v-class" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" placeholder="Kelas">
                                         </div>
                                         <input id="v-pass" type="text" class="hide-password w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" placeholder="Password">
-                                        <button onclick="window.addVoter()" class="w-full py-4 bg-white text-slate-900 font-black rounded-2xl text-[10px] uppercase tracking-widest active:scale-95 transition-all">Daftarkan</button>
+                                        <button onclick="window.addVoter()" class="w-full py-4 bg-white text-slate-900 font-black rounded-2xl text-[10px] uppercase active:scale-95 transition-all">Daftarkan</button>
                                     </div>
                                 </div>
                                 <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5">
@@ -545,10 +634,7 @@
                                     <div class="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                                         ${voters.map(v => `
                                             <div class="p-4 rounded-2xl bg-slate-800/40 border border-white/5 flex justify-between items-center">
-                                                <div>
-                                                    <p class="text-[10px] font-black text-white uppercase">${v.name}</p>
-                                                    <p class="text-[8px] text-slate-500 font-bold uppercase tracking-widest">${v.nisn} • ${v.class} ${v.hasVoted ? '• <span class="text-emerald-500">VOTED</span>' : ''}</p>
-                                                </div>
+                                                <div><p class="text-[10px] font-black text-white uppercase">${v.name}</p><p class="text-[8px] text-slate-500 font-bold">${v.nisn} • ${v.class} ${v.hasVoted ? '• VOTED' : ''}</p></div>
                                                 <button onclick="window.showModal('HAPUS', 'Hapus ${v.name}?', () => window.deleteVoter('${v.nisn}'))" class="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-red-500 active:scale-90"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
                                             </div>
                                         `).join('')}
@@ -556,7 +642,6 @@
                                 </div>
                             </div>
                         ` : ''}
-                    </div>
                 </div>`;
             }
 
