@@ -15,52 +15,91 @@
         import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, deleteDoc, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
 
-        // CONFIGURATION
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-evoting-app';
-        
-        // Initialize Firebase
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const rtdb = getDatabase(app);
-
-        // State Management (Global)
+        // --- GLOBAL STATE ---
         let currentUser = null;
-        let currentRole = null; // 'admin' | 'voter'
-        let currentView = 'selection'; // 'selection', 'voter-login', 'admin-login', 'voter-panel', 'admin-panel'
+        let currentRole = null; 
+        let currentView = 'selection'; 
         let candidates = [];
         let voters = [];
         let webhookUrl = "";
         let isConnected = false;
+        let db, auth, rtdb, appId;
 
-        // UI Selectors
         const appRoot = document.getElementById('app-root');
 
-        // --- AUTH LOGIC ---
-        async function initAuth() {
+        // --- RECOVERY LOGIC (Jika config kosong) ---
+        function showConfigSetup() {
+            appRoot.innerHTML = `
+                <div class="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+                    <div class="w-full max-w-md bg-white p-8 rounded-[2.5rem] shadow-2xl text-center border border-slate-100">
+                        <div class="bg-red-50 text-red-500 p-4 rounded-2xl mb-6 font-bold text-sm">
+                            Error: Konfigurasi Firebase tidak ditemukan.
+                        </div>
+                        <p class="text-slate-500 text-sm mb-4">Tempelkan <b>firebaseConfig</b> dari Firebase Console Anda di bawah ini:</p>
+                        <textarea id="manual-config" class="w-full h-32 p-4 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-mono mb-4 outline-none focus:ring-2 focus:ring-indigo-500" placeholder='{ "apiKey": "...", "projectId": "...", ... }'></textarea>
+                        <button onclick="window.saveManualConfig()" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl shadow-lg hover:bg-indigo-700 transition-all uppercase tracking-widest">Hubungkan Sekarang</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        window.saveManualConfig = () => {
+            const val = document.getElementById('manual-config').value;
             try {
+                JSON.parse(val);
+                localStorage.setItem('evoting_manual_config', val);
+                location.reload();
+            } catch (e) {
+                alert("Format JSON tidak valid!");
+            }
+        };
+
+        // --- INITIALIZATION ---
+        async function startApp() {
+            let config;
+            try {
+                // Prioritas: 1. Environment Variable, 2. LocalStorage
+                const envConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+                const localConfig = localStorage.getItem('evoting_manual_config');
+                
+                if (envConfig && envConfig !== "{}" && envConfig !== "") {
+                    config = JSON.parse(envConfig);
+                } else if (localConfig) {
+                    config = JSON.parse(localConfig);
+                }
+
+                if (!config || !config.apiKey) {
+                    showConfigSetup();
+                    return;
+                }
+
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'default-evoting-app';
+                const app = initializeApp(config);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                rtdb = getDatabase(app);
+
+                // Auth process
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
                     await signInAnonymously(auth);
                 }
+
+                onAuthStateChanged(auth, (user) => {
+                    currentUser = user;
+                    if (user) startDataListeners();
+                    window.render();
+                });
+
             } catch (err) {
-                console.error("Auth Error:", err);
+                console.error("Init Error:", err);
+                showConfigSetup();
             }
         }
 
-        onAuthStateChanged(auth, (user) => {
-            currentUser = user;
-            if (user) {
-                startDataListeners();
-            }
-            window.render();
-        });
-
-        // --- DATABASE LISTENERS ---
         function startDataListeners() {
-            // Listen to Connection
+            // Monitor real-time connection status
             const connectedRef = ref(rtdb, '.info/connected');
             onValue(connectedRef, (snap) => {
                 isConnected = snap.val() === true;
@@ -68,32 +107,27 @@
             });
 
             // Listen to Candidates
-            const candRef = collection(db, 'artifacts', appId, 'public', 'data', 'candidates');
-            onSnapshot(candRef, (snap) => {
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'candidates'), (snap) => {
                 candidates = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 window.render();
-            });
+            }, (err) => console.error("Firestore Error:", err));
 
             // Listen to Voters
-            const voterRef = collection(db, 'artifacts', appId, 'public', 'data', 'voters');
-            onSnapshot(voterRef, (snap) => {
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'voters'), (snap) => {
                 voters = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 window.render();
             });
 
             // Listen to Settings
-            const setRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'discord');
-            onSnapshot(setRef, (docSnap) => {
+            onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'discord'), (docSnap) => {
                 if (docSnap.exists()) webhookUrl = docSnap.data().url || "";
             });
         }
 
-        // --- ACTIONS (Exposed to Window for HTML access) ---
-        window.setCurrentView = (view) => {
-            currentView = view;
-            window.render();
-        };
-
+        // --- EXPOSED ACTIONS ---
+        window.setCurrentView = (view) => { currentView = view; window.render(); };
+        window.logout = () => { currentRole = null; currentView = 'selection'; window.render(); };
+        
         window.handleLogin = async (type) => {
             const userInp = document.getElementById('login-user').value;
             const passInp = document.getElementById('login-pass').value;
@@ -119,24 +153,18 @@
             window.render();
         };
 
-        window.logout = () => {
-            currentRole = null;
-            currentView = 'selection';
-            window.render();
-        };
-
         window.castVote = async (candId) => {
             if (currentUser.hasVoted) return;
             try {
                 const cand = candidates.find(c => c.id === candId);
-                const candRef = doc(db, 'artifacts', appId, 'public', 'data', 'candidates', candId);
-                await updateDoc(candRef, { votes: (cand.votes || 0) + 1 });
-
-                const voterRef = doc(db, 'artifacts', appId, 'public', 'data', 'voters', currentUser.nisn);
-                await updateDoc(voterRef, { hasVoted: true });
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', candId), { 
+                    votes: (cand.votes || 0) + 1 
+                });
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', currentUser.nisn), { 
+                    hasVoted: true 
+                });
 
                 currentUser.hasVoted = true;
-                
                 if (webhookUrl) {
                     fetch(webhookUrl, {
                         method: 'POST',
@@ -144,32 +172,15 @@
                         body: JSON.stringify({
                             embeds: [{
                                 title: "📢 Suara Masuk!",
-                                description: `**${currentUser.name}** baru saja memilih **${cand.name}**`,
+                                description: `**${currentUser.name}** memilih **${cand.name}**`,
                                 color: 5814783,
                                 timestamp: new Date().toISOString()
                             }]
                         })
                     });
                 }
-                alert("Terima kasih! Suara Anda berhasil dikirim.");
                 window.render();
-            } catch (e) {
-                alert("Gagal mengirim suara: " + e.message);
-            }
-        };
-
-        window.addCandidate = async () => {
-            const name = document.getElementById('cand-name').value;
-            const vision = document.getElementById('cand-vision').value;
-            if (!name || !vision) return;
-            const ref = doc(collection(db, 'artifacts', appId, 'public', 'data', 'candidates'));
-            await setDoc(ref, { 
-                name, 
-                vision, 
-                photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`, 
-                votes: 0 
-            });
-            window.render();
+            } catch (e) { alert("Error: " + e.message); }
         };
 
         window.addVoter = async () => {
@@ -178,9 +189,20 @@
             const cls = document.getElementById('v-class').value;
             const pass = document.getElementById('v-pass').value;
             if (!name || !nisn || !pass) return;
-            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn);
-            await setDoc(ref, { name, nisn, class: cls, password: pass, hasVoted: false });
-            window.render();
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn), { 
+                name, nisn, class: cls, password: pass, hasVoted: false 
+            });
+        };
+
+        window.addCandidate = async () => {
+            const name = document.getElementById('cand-name').value;
+            const vision = document.getElementById('cand-vision').value;
+            if (!name || !vision) return;
+            const ref = doc(collection(db, 'artifacts', appId, 'public', 'data', 'candidates'));
+            await setDoc(ref, { 
+                name, vision, votes: 0,
+                photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`
+            });
         };
 
         window.deleteVoter = async (nisn) => {
@@ -189,24 +211,15 @@
             }
         };
 
-        window.saveWebhook = async () => {
-            const url = document.getElementById('hook-url').value;
-            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'discord'), { url });
-            alert("Berhasil disimpan!");
-        };
-
-        // --- RENDERING ENGINE ---
         window.render = function() {
             let html = "";
-
             const connStatus = currentRole === 'admin' ? `
                 <div class="fixed top-0 left-0 right-0 z-[100] flex items-center justify-center py-1.5 px-4 shadow-md transition-all ${isConnected ? 'bg-emerald-500' : 'bg-red-500'}">
                     <div class="flex items-center gap-2 text-white font-black text-[10px] tracking-widest uppercase">
-                        <i data-lucide="${isConnected ? 'wifi' : 'wifi-off'}" class="w-3.5 h-3.5 ${isConnected ? 'animate-pulse' : ''}"></i>
+                        <i data-lucide="${isConnected ? 'wifi' : 'wifi-off'}" class="w-3.5 h-3.5"></i>
                         ${isConnected ? 'DATABASE CONNECTED' : 'DATABASE DISCONNECTED'}
                     </div>
-                </div>
-            ` : '';
+                </div>` : '';
 
             if (currentView === 'selection') {
                 html = `
@@ -214,25 +227,15 @@
                     <div class="w-full max-w-md space-y-6">
                         <div class="text-center mb-10">
                             <h1 class="text-4xl font-black text-slate-800 tracking-tighter">E-VOTING <span class="text-indigo-600">OSIS</span></h1>
-                            <p class="text-slate-500 mt-2 font-medium tracking-wide">Mewujudkan Demokrasi Digital Sekolah</p>
+                            <p class="text-slate-500 mt-2 font-medium tracking-wide italic">"Suara Anda, Masa Depan Sekolah"</p>
                         </div>
                         <button onclick="window.setCurrentView('voter-login')" class="group w-full bg-white p-6 rounded-[2.5rem] shadow-xl border border-white flex items-center gap-6 hover:scale-[1.02] transition-all">
-                            <div class="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-3xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-colors">
-                                <i data-lucide="user" class="w-8 h-8"></i>
-                            </div>
-                            <div class="text-left">
-                                <h3 class="text-xl font-black text-slate-800">Login Siswa</h3>
-                                <p class="text-sm text-slate-400 font-medium">Masuk untuk memberikan suara</p>
-                            </div>
+                            <div class="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-3xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-colors"><i data-lucide="user" class="w-8 h-8"></i></div>
+                            <div class="text-left"><h3 class="text-xl font-black text-slate-800">Login Siswa</h3><p class="text-sm text-slate-400 font-medium">Klik untuk masuk dan memilih</p></div>
                         </button>
                         <button onclick="window.setCurrentView('admin-login')" class="group w-full bg-slate-800 p-6 rounded-[2.5rem] shadow-xl border border-slate-700 flex items-center gap-6 hover:scale-[1.02] transition-all">
-                            <div class="w-16 h-16 bg-slate-700 text-slate-300 rounded-3xl flex items-center justify-center group-hover:bg-indigo-500 group-hover:text-white transition-colors">
-                                <i data-lucide="settings" class="w-8 h-8"></i>
-                            </div>
-                            <div class="text-left text-white">
-                                <h3 class="text-xl font-black">Login Admin</h3>
-                                <p class="text-sm text-slate-400 font-medium">Kelola kandidat & statistik</p>
-                            </div>
+                            <div class="w-16 h-16 bg-slate-700 text-slate-300 rounded-3xl flex items-center justify-center group-hover:bg-indigo-500 group-hover:text-white transition-colors"><i data-lucide="settings" class="w-8 h-8"></i></div>
+                            <div class="text-left text-white"><h3 class="text-xl font-black">Login Panitia</h3><p class="text-sm text-slate-400 font-medium">Kelola data & hasil voting</p></div>
                         </button>
                     </div>
                 </div>`;
@@ -249,10 +252,10 @@
                             <h2 class="text-2xl font-black text-gray-800 tracking-tight">Login ${isAdmin ? 'Admin' : 'Siswa'}</h2>
                         </div>
                         <div class="space-y-4">
-                            <input id="login-user" type="text" class="w-full rounded-2xl border-none bg-slate-50 p-4 ring-1 ring-slate-100 outline-none" placeholder="${isAdmin ? 'Username Admin' : 'NISN Siswa'}">
+                            <input id="login-user" type="text" class="w-full rounded-2xl border-none bg-slate-50 p-4 ring-1 ring-slate-100 outline-none" placeholder="${isAdmin ? 'Username' : 'NISN'}">
                             <input id="login-pass" type="password" class="w-full rounded-2xl border-none bg-slate-50 p-4 ring-1 ring-slate-100 outline-none" placeholder="Password">
                             <p id="login-error" class="text-center text-sm font-bold text-red-500"></p>
-                            <button onclick="window.handleLogin('${isAdmin ? 'admin' : 'voter'}')" class="w-full rounded-2xl py-4 font-bold text-white shadow-xl transition-all ${isAdmin ? 'bg-slate-800' : 'bg-indigo-600'}">Masuk</button>
+                            <button onclick="window.handleLogin('${isAdmin ? 'admin' : 'voter'}')" class="w-full rounded-2xl py-4 font-bold text-white shadow-xl transition-all ${isAdmin ? 'bg-slate-800' : 'bg-indigo-600'} uppercase tracking-widest">Konfirmasi Masuk</button>
                         </div>
                     </div>
                 </div>`;
@@ -263,67 +266,41 @@
                     ${connStatus}
                     <div class="mx-auto max-w-7xl">
                         <header class="mb-8 flex items-center justify-between rounded-3xl bg-white p-6 shadow-sm border border-gray-100">
-                            <h2 class="text-2xl font-black text-gray-800 flex items-center gap-2"><i data-lucide="shield-check" class="text-indigo-600"></i> Panel Kontrol</h2>
-                            <button onclick="window.logout()" class="flex items-center gap-2 rounded-xl bg-red-50 px-4 py-2 font-bold text-red-600 hover:bg-red-100"><i data-lucide="log-out" class="w-4 h-4"></i> Keluar</button>
+                            <h2 class="text-2xl font-black text-gray-800 flex items-center gap-2 uppercase tracking-tighter"><i data-lucide="shield-check" class="text-indigo-600"></i> Panel Kontrol OSIS</h2>
+                            <button onclick="window.logout()" class="flex items-center gap-2 rounded-xl bg-red-50 px-6 py-2.5 font-bold text-red-600 hover:bg-red-100 transition-all">KELUAR</button>
                         </header>
-
                         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
                             <div class="lg:col-span-4 space-y-6">
-                                <div class="rounded-3xl bg-white p-6 border border-gray-100">
-                                    <h4 class="mb-4 font-black flex items-center gap-2"><i data-lucide="bell-ring" class="w-4 h-4 text-indigo-600"></i> Discord Webhook</h4>
-                                    <input id="hook-url" class="w-full rounded-xl bg-gray-50 p-3 text-sm ring-1 ring-gray-100 mb-3" placeholder="Webhook URL" value="${webhookUrl}">
-                                    <button onclick="window.saveWebhook()" class="w-full rounded-xl bg-slate-800 py-3 text-sm font-bold text-white hover:bg-slate-700">Simpan Webhook</button>
+                                <div class="rounded-3xl bg-white p-6 border border-gray-100 shadow-sm">
+                                    <h4 class="mb-4 font-black flex items-center gap-2 text-xs text-slate-400 uppercase tracking-widest">Kandidat Baru</h4>
+                                    <input id="cand-name" class="w-full rounded-xl bg-gray-50 p-3 mb-2 ring-1 ring-gray-100 text-sm" placeholder="Nama Paslon">
+                                    <textarea id="cand-vision" class="w-full rounded-xl bg-gray-50 p-3 mb-3 ring-1 ring-gray-100 h-20 text-sm" placeholder="Visi & Misi Singkat"></textarea>
+                                    <button onclick="window.addCandidate()" class="w-full rounded-xl bg-indigo-600 py-3 font-bold text-white hover:bg-indigo-700 transition-all shadow-md">TAMBAH KANDIDAT</button>
                                 </div>
-                                <div class="rounded-3xl bg-white p-6 border border-gray-100">
-                                    <h4 class="mb-4 font-black flex items-center gap-2"><i data-lucide="trophy" class="w-4 h-4 text-orange-500"></i> Tambah Kandidat</h4>
-                                    <input id="cand-name" class="w-full rounded-xl bg-gray-50 p-3 mb-2 ring-1 ring-gray-100" placeholder="Nama">
-                                    <textarea id="cand-vision" class="w-full rounded-xl bg-gray-50 p-3 mb-3 ring-1 ring-gray-100 h-20" placeholder="Visi"></textarea>
-                                    <button onclick="window.addCandidate()" class="w-full rounded-xl bg-indigo-600 py-3 font-bold text-white hover:bg-indigo-700">Tambah</button>
-                                </div>
-                                <div class="rounded-3xl bg-white p-6 border border-gray-100">
-                                    <h4 class="mb-4 font-black flex items-center gap-2"><i data-lucide="user-plus" class="w-4 h-4 text-emerald-500"></i> Registrasi Siswa</h4>
-                                    <input id="v-name" class="w-full rounded-xl bg-gray-50 p-3 mb-2 ring-1 ring-gray-100" placeholder="Nama">
+                                <div class="rounded-3xl bg-white p-6 border border-gray-100 shadow-sm">
+                                    <h4 class="mb-4 font-black flex items-center gap-2 text-xs text-slate-400 uppercase tracking-widest">Registrasi Pemilih</h4>
+                                    <input id="v-name" class="w-full rounded-xl bg-gray-50 p-3 mb-2 ring-1 ring-gray-100 text-sm" placeholder="Nama Lengkap">
                                     <div class="grid grid-cols-2 gap-2 mb-2">
-                                        <input id="v-nisn" class="w-full rounded-xl bg-gray-50 p-3 ring-1 ring-gray-100" placeholder="NISN">
-                                        <input id="v-class" class="w-full rounded-xl bg-gray-50 p-3 ring-1 ring-gray-100" placeholder="Kelas">
+                                        <input id="v-nisn" class="w-full rounded-xl bg-gray-50 p-3 ring-1 ring-gray-100 text-sm" placeholder="NISN">
+                                        <input id="v-class" class="w-full rounded-xl bg-gray-50 p-3 ring-1 ring-gray-100 text-sm" placeholder="Kelas">
                                     </div>
-                                    <input id="v-pass" type="password" class="w-full rounded-xl bg-gray-50 p-3 mb-3 ring-1 ring-gray-100" placeholder="Password">
-                                    <button onclick="window.addVoter()" class="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-700">Daftarkan</button>
+                                    <input id="v-pass" type="password" class="w-full rounded-xl bg-gray-50 p-3 mb-3 ring-1 ring-gray-100 text-sm" placeholder="Password Login">
+                                    <button onclick="window.addVoter()" class="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-700 transition-all shadow-md uppercase text-xs tracking-widest">Daftarkan Siswa</button>
                                 </div>
                             </div>
-
                             <div class="lg:col-span-8 space-y-6">
-                                <div class="rounded-3xl bg-white p-6 border border-gray-100">
-                                    <h4 class="mb-6 font-black text-gray-800 uppercase text-xs text-slate-400">Statistik Real-time (${totalVotes} Suara)</h4>
-                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="rounded-3xl bg-white p-8 border border-gray-100 shadow-sm">
+                                    <h4 class="mb-6 font-black text-gray-800 uppercase text-xs text-slate-400 tracking-widest">Real-time Stats (${totalVotes} Suara Masuk)</h4>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                         ${candidates.map(c => {
                                             const perc = totalVotes > 0 ? Math.round((c.votes/totalVotes)*100) : 0;
                                             return `
-                                            <div class="rounded-2xl bg-slate-50 p-4 border border-gray-100">
-                                                <div class="flex justify-between font-bold text-sm mb-2"><span>${c.name}</span><span class="text-indigo-600">${perc}%</span></div>
-                                                <div class="h-2 w-full rounded-full bg-gray-200 overflow-hidden"><div class="h-full bg-indigo-600" style="width: ${perc}%"></div></div>
-                                                <p class="mt-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest">${c.votes} Suara</p>
+                                            <div class="rounded-2xl bg-slate-50 p-5 border border-slate-100">
+                                                <div class="flex justify-between font-black text-sm mb-3 uppercase tracking-tighter"><span>${c.name}</span><span class="text-indigo-600">${perc}%</span></div>
+                                                <div class="h-3 w-full rounded-full bg-slate-200 overflow-hidden"><div class="h-full bg-indigo-600 rounded-full transition-all duration-1000" style="width: ${perc}%"></div></div>
+                                                <div class="mt-3 flex justify-between items-center"><p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">${c.votes} SUARA</p><div class="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></div></div>
                                             </div>`;
                                         }).join('')}
-                                    </div>
-                                </div>
-                                <div class="rounded-3xl bg-white shadow-sm border border-gray-100 overflow-hidden">
-                                    <div class="p-6 border-b border-gray-50"><h4 class="font-black">Manajemen Pemilih (${voters.length})</h4></div>
-                                    <div class="max-h-[500px] overflow-y-auto">
-                                        <table class="w-full text-left text-sm">
-                                            <thead class="bg-gray-50 text-xs font-bold text-gray-400 uppercase">
-                                                <tr><th class="p-4">Nama</th><th class="p-4">NISN/Kelas</th><th class="p-4">Status</th><th class="p-4">Aksi</th></tr>
-                                            </thead>
-                                            <tbody>
-                                                ${voters.map(v => `
-                                                <tr class="border-b border-gray-50">
-                                                    <td class="p-4 font-bold text-gray-700">${v.name}</td>
-                                                    <td class="p-4 text-gray-500">${v.nisn} / ${v.class}</td>
-                                                    <td class="p-4"><span class="px-2 py-1 rounded text-[10px] font-black uppercase ${v.hasVoted ? 'bg-emerald-100 text-emerald-600' : 'bg-orange-100 text-orange-600'}">${v.hasVoted ? 'Sudah' : 'Belum'}</span></td>
-                                                    <td class="p-4"><button onclick="window.deleteVoter('${v.nisn}')" class="text-red-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></td>
-                                                </tr>`).join('')}
-                                            </tbody>
-                                        </table>
                                     </div>
                                 </div>
                             </div>
@@ -334,29 +311,29 @@
                 html = `
                 <div class="min-h-screen bg-slate-50 p-6">
                     <div class="mx-auto max-w-4xl">
-                        <header class="mb-10 flex items-center justify-between rounded-[2rem] bg-white p-8 border border-gray-100">
-                            <div><h2 class="text-2xl font-black text-gray-800 tracking-tighter uppercase">Halo, <span class="text-indigo-600">${currentUser.name}</span></h2><p class="text-sm text-gray-500">Gunakan suara Anda dengan bijak.</p></div>
-                            <button onclick="window.logout()" class="rounded-2xl bg-red-50 p-3 text-red-600"><i data-lucide="log-out"></i></button>
+                        <header class="mb-10 flex items-center justify-between rounded-[2rem] bg-white p-8 shadow-sm border border-gray-100">
+                            <div><h2 class="text-2xl font-black text-gray-800 tracking-tighter uppercase">Halo, <span class="text-indigo-600">${currentUser.name}</span></h2><p class="text-sm text-gray-500 font-medium italic">Silakan gunakan hak pilih Anda.</p></div>
+                            <button onclick="window.logout()" class="rounded-2xl bg-red-50 p-4 text-red-600 hover:bg-red-100 transition-all"><i data-lucide="log-out"></i></button>
                         </header>
                         ${currentUser.hasVoted ? `
-                            <div class="rounded-[3rem] bg-emerald-500 p-12 text-center text-white shadow-2xl">
-                                <div class="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-white/20 animate-bounce"><i data-lucide="check-circle" class="w-10 h-10"></i></div>
-                                <h3 class="text-3xl font-black uppercase">Terima Kasih!</h3>
-                                <p class="mt-2 opacity-90">Partisipasi Anda telah tercatat.</p>
-                                <button onclick="window.logout()" class="mt-8 bg-white text-emerald-600 font-black px-8 py-3 rounded-full">Selesai & Keluar</button>
+                            <div class="rounded-[3rem] bg-white p-12 text-center shadow-2xl border border-indigo-50">
+                                <div class="mx-auto mb-6 flex h-24 w-24 items-center justify-center rounded-full bg-emerald-100 text-emerald-600"><i data-lucide="check-circle" class="w-12 h-12"></i></div>
+                                <h3 class="text-4xl font-black text-slate-800 uppercase tracking-tighter">Terima Kasih!</h3>
+                                <p class="mt-4 text-slate-500 font-medium">Suara Anda telah berhasil dikirim dan dihitung oleh server.</p>
+                                <button onclick="window.logout()" class="mt-10 bg-slate-900 text-white font-black px-12 py-4 rounded-full hover:scale-105 transition-all shadow-xl">KELUAR DARI SISTEM</button>
                             </div>
                         ` : `
                             <div class="grid grid-cols-1 gap-8 md:grid-cols-2">
                                 ${candidates.map((c, idx) => `
-                                    <div class="overflow-hidden rounded-[3rem] bg-white shadow-2xl border border-gray-100">
-                                        <div class="relative">
-                                            <img src="${c.photo}" class="h-64 w-full object-cover">
-                                            <div class="absolute top-4 left-4 rounded-full bg-white/90 px-4 py-1 text-xs font-black text-indigo-600 shadow-sm uppercase">Nomor Urut 0${idx + 1}</div>
+                                    <div class="overflow-hidden rounded-[3rem] bg-white shadow-2xl border border-slate-50 group hover:-translate-y-2 transition-all duration-500">
+                                        <div class="relative h-64 overflow-hidden">
+                                            <img src="${c.photo}" class="h-full w-full object-cover group-hover:scale-110 transition-transform duration-700">
+                                            <div class="absolute top-6 left-6 rounded-full bg-white/90 backdrop-blur px-5 py-2 text-xs font-black text-indigo-600 shadow-xl uppercase tracking-widest">Kandidat 0${idx + 1}</div>
                                         </div>
                                         <div class="p-8">
-                                            <h4 class="text-2xl font-black text-gray-800 uppercase tracking-tighter">${c.name}</h4>
-                                            <div class="mt-4 rounded-2xl bg-slate-50 p-4 italic text-gray-500 text-sm">"${c.vision}"</div>
-                                            <button onclick="window.castVote('${c.id}')" class="mt-8 w-full rounded-[2rem] bg-slate-900 py-4 font-bold text-white shadow-xl hover:bg-indigo-600 active:scale-95 transition-all">BERIKAN SUARA</button>
+                                            <h4 class="text-2xl font-black text-slate-800 uppercase tracking-tighter mb-4">${c.name}</h4>
+                                            <div class="mb-8 rounded-2xl bg-slate-50 p-5 italic text-slate-500 text-sm border-l-4 border-indigo-500">"${c.vision}"</div>
+                                            <button onclick="window.castVote('${c.id}')" class="w-full rounded-[2rem] bg-indigo-600 py-4 font-bold text-white shadow-xl hover:bg-slate-900 transition-all uppercase tracking-widest text-sm">Berikan Suara</button>
                                         </div>
                                     </div>
                                 `).join('')}
@@ -365,21 +342,25 @@
                     </div>
                 </div>`;
             }
-
             appRoot.innerHTML = html;
             lucide.createIcons(); 
-        }
+        };
 
-        // --- START ---
-        initAuth();
+        // Mulai aplikasi
+        window.onload = startApp;
     </script>
 </head>
-<body class="bg-slate-50 antialiased">
+<body class="bg-slate-50 antialiased font-sans selection:bg-indigo-100 selection:text-indigo-700">
     <div id="app-root">
-        <!-- Loading Screen -->
-        <div class="flex h-screen flex-col items-center justify-center bg-slate-50 gap-4 text-center">
-            <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-            <p class="font-black text-slate-800 tracking-widest text-sm uppercase">Menghubungkan Server...</p>
+        <div class="flex h-screen flex-col items-center justify-center gap-6">
+            <div class="relative flex items-center justify-center">
+                <div class="w-16 h-16 border-4 border-slate-200 rounded-full"></div>
+                <div class="absolute w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <div class="space-y-2 text-center">
+                <p class="font-black text-slate-800 tracking-[0.3em] text-xs uppercase animate-pulse">Menghubungkan Server...</p>
+                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Silakan Tunggu Sebentar</p>
+            </div>
         </div>
     </div>
 </body>
