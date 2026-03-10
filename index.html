@@ -285,8 +285,21 @@
             } catch (e) { console.error(e); }
         };
 
+        // FIXED: Menghapus voter sekaligus mengurangi jumlah suara kandidat jika voter sudah memilih
         window.deleteVoter = async (nisn) => {
-            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn));
+            try {
+                const voter = voters.find(v => v.nisn === nisn);
+                if (voter && voter.hasVoted && voter.votedFor) {
+                    // Kurangi jumlah suara dari kandidat terkait
+                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', voter.votedFor), { 
+                        votes: increment(-1) 
+                    });
+                }
+                // Hapus data pemilih
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn));
+            } catch (e) {
+                console.error("Gagal menghapus voter:", e);
+            }
         };
 
         window.toggleSidebar = () => { showSidebar = !showSidebar; window.render(); };
