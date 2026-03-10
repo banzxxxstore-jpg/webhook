@@ -111,7 +111,6 @@
 
                 setInterval(() => {
                     checkTimer();
-                    // Update only the countdown text elements to save performance
                     const timerEls = document.querySelectorAll('.live-timer-text');
                     timerEls.forEach(el => el.innerText = window.getCountdownStr());
                 }, 1000);
@@ -161,8 +160,8 @@
 
             if (distance < 0 && !isExpired) {
                 isExpired = true;
-                if (!hasAnnounced && candidates.length > 0) {
-                    announceWinner();
+                if (!hasAnnounced && (candidates.length > 0 || voters.length > 0)) {
+                    announceAndPurge();
                 }
                 window.render();
             } else if (distance > 0 && isExpired) {
@@ -171,19 +170,28 @@
             }
         }
 
-        async function announceWinner() {
+        // Fungsi baru untuk pengumuman dan pembersihan otomatis total
+        async function announceAndPurge() {
             if (hasAnnounced) return;
             
-            const sorted = [...candidates].sort((a, b) => (b.votes || 0) - (a.votes || 0));
-            const winner = sorted[0];
-            const totalVoters = voters.length;
-            const votedCount = voters.filter(v => v.hasVoted).length;
+            let message = `🏆 *HASIL AKHIR E-VOTING OSIS*\n\nBilik suara resmi ditutup.\n\n`;
+            
+            if (candidates.length > 0) {
+                const sorted = [...candidates].sort((a, b) => (b.votes || 0) - (a.votes || 0));
+                const winner = sorted[0];
+                const totalVoters = voters.length;
+                const votedCount = voters.filter(v => v.hasVoted).length;
 
-            const message = `🏆 *HASIL AKHIR E-VOTING OSIS*\n\nBilik suara resmi ditutup.\n\n🥇 *PEMENANG:* ${winner.name}\n📊 Perolehan: ${winner.votes} Suara\n\n📈 *STATISTIK:* \n- Partisipasi: ${Math.round((votedCount/totalVoters)*100)}%\n- Total Suara Masuk: ${votedCount}\n\nTerima kasih atas partisipasi seluruh siswa!`;
+                message += `🥇 *PEMENANG:* ${winner.name}\n📊 Perolehan: ${winner.votes} Suara\n\n📈 *STATISTIK:* \n- Partisipasi: ${totalVoters > 0 ? Math.round((votedCount/totalVoters)*100) : 0}%\n- Total Suara Masuk: ${votedCount}\n\nTerima kasih atas partisipasi seluruh siswa!`;
+            } else {
+                message += `Voting telah berakhir tanpa kandidat yang tersedia.`;
+            }
 
             try {
+                // Tandai sudah diumumkan
                 await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'notifications'), { hasAnnounced: true });
                 
+                // Kirim Notifikasi WA
                 if (whatsappConfig.enabled && whatsappConfig.token && whatsappConfig.target) {
                     const formData = new FormData();
                     formData.append('target', whatsappConfig.target);
@@ -195,14 +203,25 @@
                     });
                 }
 
+                // PEMBERSIHAN TOTAL: Hapus semua kandidat DAN semua siswa
                 const batch = writeBatch(db);
+                
+                // Antre penghapusan kandidat
                 candidates.forEach(c => {
                     const ref = doc(db, 'artifacts', appId, 'public', 'data', 'candidates', c.id);
                     batch.delete(ref);
                 });
-                await batch.commit();
 
-            } catch (e) { console.error("Error announcing winner:", e); }
+                // Antre penghapusan semua pemilih (siswa)
+                voters.forEach(v => {
+                    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'voters', v.nisn);
+                    batch.delete(ref);
+                });
+
+                await batch.commit();
+                console.log("Auto-Purge Complete: All candidates and voters removed.");
+
+            } catch (e) { console.error("Error during announce and purge:", e); }
         }
 
         window.showModal = (title, message, onConfirm = null, isAlert = false) => {
@@ -347,14 +366,19 @@
             } catch (e) { console.error(e); }
         };
 
+        // Perbaikan fungsi deleteVoter agar manual delete juga berfungsi
         window.deleteVoter = async (nisn) => {
             const voter = voters.find(v => v.nisn === nisn);
-            if (voter && voter.hasVoted && voter.votedFor) {
-                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', voter.votedFor), { 
-                    votes: increment(-1) 
-                });
-            }
-            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn));
+            if (!voter) return;
+            
+            try {
+                if (voter.hasVoted && voter.votedFor) {
+                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'candidates', voter.votedFor), { 
+                        votes: increment(-1) 
+                    }).catch(e => console.log("Candidate skip or not found"));
+                }
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'voters', nisn));
+            } catch (e) { console.error("Error deleting voter:", e); }
         };
 
         window.toggleSidebar = () => { showSidebar = !showSidebar; window.render(); };
@@ -376,7 +400,7 @@
             const root = document.getElementById('app-root');
             if (!root) return;
 
-            const isUrgent = timerEnd && (new Date(timerEnd).getTime() - new Date().getTime() < 3600000); // 1 jam sisa
+            const isUrgent = timerEnd && (new Date(timerEnd).getTime() - new Date().getTime() < 3600000); 
 
             const statusHtml = `<div class="fixed top-6 left-6 z-[100] glass px-4 py-2 rounded-full flex items-center gap-2">
                 <div class="w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-red-500'}"></div>
@@ -462,6 +486,8 @@
                             <button onclick="window.logout()" class="w-full py-4 bg-slate-800 text-white font-black rounded-2xl text-[10px] uppercase">Logout</button>
                         </div>
                     </div>`;
+                } else if (!currentUser) {
+                    window.logout(); return;
                 } else if (currentUser.hasVoted) {
                     content = `<div class="min-h-screen flex items-center justify-center p-6 text-center animate-view">
                         <div class="bg-slate-900 p-10 rounded-[3rem] border border-white/5 max-w-sm w-full">
@@ -518,7 +544,7 @@
                             <div class="w-full p-10 rounded-[3rem] mb-8 flex flex-col items-center justify-center text-center countdown-card border">
                                 <p class="text-[10px] font-black text-indigo-400 uppercase tracking-[0.3em] mb-4">Sisa Waktu Pemilihan</p>
                                 <h1 class="text-6xl md:text-8xl font-black ${isUrgent ? 'text-red-500' : 'text-white'} tracking-tighter live-timer-text tabular-nums">${window.getCountdownStr()}</h1>
-                                <p class="mt-6 text-[9px] text-slate-500 font-black uppercase max-w-xs leading-loose">Pemenang akan otomatis diumumkan dan data dibersihkan saat waktu menyentuh nol.</p>
+                                <p class="mt-6 text-[9px] text-slate-500 font-black uppercase max-w-xs leading-loose">Data akan otomatis dibersihkan total saat waktu menyentuh nol (Siswa & Kandidat akan di-reset).</p>
                             </div>` : ''}
 
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -549,18 +575,8 @@
                                             <p class="text-[9px] text-slate-500 font-bold uppercase">Atur kapan bilik suara ditutup</p>
                                         </div>
                                     </div>
-                                    
-                                    <div class="relative group">
-                                        <input id="timer-val" type="datetime-local" class="w-full p-6 bg-slate-800/50 text-white rounded-3xl text-sm font-black outline-none border border-white/5 focus:border-indigo-500/50 transition-all" value="${timerEnd || ''}">
-                                        <div class="absolute right-6 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-500"><i data-lucide="calendar" class="w-5 h-5"></i></div>
-                                    </div>
-                                    
-                                    <div class="mt-8 p-6 bg-indigo-500/5 rounded-[2rem] border border-indigo-500/10">
-                                        <div class="flex gap-4">
-                                            <div class="text-indigo-400 pt-1"><i data-lucide="info" class="w-4 h-4"></i></div>
-                                            <p class="text-[9px] text-indigo-300 font-bold uppercase leading-relaxed">Sistem akan otomatis menghitung pemenang dan mengirim notifikasi WhatsApp saat waktu berakhir.</p>
-                                        </div>
-                                    </div>
+                                    <input id="timer-val" type="datetime-local" class="w-full p-6 bg-slate-800/50 text-white rounded-3xl text-sm font-black outline-none border border-white/5 focus:border-indigo-500/50 transition-all mb-4" value="${timerEnd || ''}">
+                                    <p class="text-[9px] text-indigo-400 font-bold uppercase text-center">Data kandidat & siswa akan dihapus permanen saat waktu habis.</p>
                                 </div>
 
                                 <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5">
@@ -585,7 +601,7 @@
                                     </div>
                                     <input id="discord-url" type="text" class="w-full p-5 bg-slate-800/50 text-white rounded-2xl text-[10px] font-bold outline-none border border-white/5 mb-10" value="${discordWebhook}" placeholder="Discord Webhook URL">
                                     
-                                    <button onclick="window.updateSettings()" class="w-full py-6 grad-primary text-white font-black rounded-3xl text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-500/20 active:scale-95 transition-all">Terapkan Perubahan</button>
+                                    <button onclick="window.updateSettings()" class="w-full py-6 grad-primary text-white font-black rounded-3xl text-[10px] uppercase tracking-widest active:scale-95 transition-all">Terapkan Perubahan</button>
                                 </div>
                             </div>
                         ` : ''}
@@ -598,7 +614,7 @@
                                         <input id="c-name" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" placeholder="Nama Paslon">
                                         <input id="c-photo" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" placeholder="URL Foto">
                                         <textarea id="c-vision" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none h-24" placeholder="Visi & Misi"></textarea>
-                                        <button onclick="window.addCandidate()" class="w-full py-4 grad-primary text-white font-black rounded-2xl text-[10px] uppercase active:scale-95 transition-all">Simpan Paslon</button>
+                                        <button onclick="window.addCandidate()" class="w-full py-4 grad-primary text-white font-black rounded-2xl text-[10px] uppercase">Simpan Paslon</button>
                                     </div>
                                 </div>
                                 <div class="space-y-4">
@@ -608,7 +624,7 @@
                                                 <img src="${c.photo}" class="w-12 h-12 rounded-xl object-cover">
                                                 <p class="font-black text-[10px] uppercase text-white">${c.name}</p>
                                             </div>
-                                            <button onclick="window.showModal('HAPUS', 'Hapus kandidat ${c.name}?', () => window.deleteCandidate('${c.id}'))" class="w-10 h-10 bg-red-500/10 text-red-500 rounded-xl flex items-center justify-center active:scale-90"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                            <button onclick="window.showModal('HAPUS', 'Hapus kandidat ${c.name}?', () => window.deleteCandidate('${c.id}'))" class="w-10 h-10 bg-red-500/10 text-red-500 rounded-xl flex items-center justify-center"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
                                         </div>
                                     `).join('')}
                                 </div>
@@ -626,7 +642,7 @@
                                             <input id="v-class" class="w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" placeholder="Kelas">
                                         </div>
                                         <input id="v-pass" type="text" class="hide-password w-full p-4 bg-slate-800 text-white rounded-2xl text-[10px] font-bold outline-none" placeholder="Password">
-                                        <button onclick="window.addVoter()" class="w-full py-4 bg-white text-slate-900 font-black rounded-2xl text-[10px] uppercase active:scale-95 transition-all">Daftarkan</button>
+                                        <button onclick="window.addVoter()" class="w-full py-4 bg-white text-slate-900 font-black rounded-2xl text-[10px] uppercase">Daftarkan</button>
                                     </div>
                                 </div>
                                 <div class="bg-slate-900 p-8 rounded-[3rem] border border-white/5">
@@ -635,7 +651,7 @@
                                         ${voters.map(v => `
                                             <div class="p-4 rounded-2xl bg-slate-800/40 border border-white/5 flex justify-between items-center">
                                                 <div><p class="text-[10px] font-black text-white uppercase">${v.name}</p><p class="text-[8px] text-slate-500 font-bold">${v.nisn} • ${v.class} ${v.hasVoted ? '• VOTED' : ''}</p></div>
-                                                <button onclick="window.showModal('HAPUS', 'Hapus ${v.name}?', () => window.deleteVoter('${v.nisn}'))" class="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-red-500 active:scale-90"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                                <button onclick="window.showModal('HAPUS', 'Hapus ${v.name}?', () => window.deleteVoter('${v.nisn}'))" class="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
                                             </div>
                                         `).join('')}
                                     </div>
